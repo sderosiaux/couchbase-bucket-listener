@@ -69,15 +69,18 @@ object CouchbaseListener extends App {
         println("mutation: " + DcpMutationMessage.toString(event))
         stats.mutation.increment()
         stats.lastDocsMutated.add(DcpMutationMessage.keyString(event))
+        client.acknowledgeBuffer(event)
         if (stats.lastDocsMutated.size > 10)
           stats.lastDocsMutated.poll()
       }
       else if (DcpDeletionMessage.is(event)) {
         println("deletion: " + DcpMutationMessage.toString(event))
+        client.acknowledgeBuffer(event)
         stats.deletion.increment()
       }
       else if (DcpExpirationMessage.is(event)) {
         println("expiration: " + DcpMutationMessage.toString(event))
+        client.acknowledgeBuffer(event)
         stats.expiration.increment()
       }
       else {
