@@ -3,17 +3,24 @@ package com.ctheu.couchbase
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.LongAdder
 
-import akka.NotUsed
+import akka.{Done, NotUsed}
 import akka.actor.ActorSystem
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model.{ContentTypes, HttpEntity}
-import akka.stream.ActorMaterializer
-import akka.stream.scaladsl.Source
+import akka.stream.{Client => _, _}
+import akka.stream.scaladsl.{GraphDSL, Keep, Merge, RunnableGraph, Sink, Source, SourceQueueWithComplete}
+import akka.stream.stage._
 import com.couchbase.client.dcp._
 import com.couchbase.client.dcp.config.DcpControl
 import com.couchbase.client.dcp.message.{DcpDeletionMessage, DcpExpirationMessage, DcpMutationMessage, DcpSnapshotMarkerRequest}
 import de.heikoseeberger.akkasse.ServerSentEvent
+
 import collection.JavaConverters._
+import scala.collection.{immutable, mutable}
+import scala.collection.immutable.Seq
+import scala.concurrent.Future
+import scala.util.parsing.json.JSON
+
 
 object CouchbaseListener extends App {
 
@@ -34,20 +41,79 @@ object CouchbaseListener extends App {
 //    ctor.stop().andThen(env.shutdown())
 //  }
 
+    class CounterGraphStage extends GraphStageWithMaterializedValue[SourceShape[Long], LongAdder] {
+      override val shape = SourceShape(Outlet[Long]("counter.out"))
+
+      override def createLogicAndMaterializedValue(inheritedAttributes: Attributes): (GraphStageLogic, LongAdder) = {
+        val counter = new LongAdder
+        (new GraphStageLogic(shape) {
+          setHandler(shape.out, new OutHandler {
+            override def onPull() = {
+              push(shape.out, counter.longValue())
+              counter.increment()
+            }
+          })
+        }, counter)
+      }
+    }
+
+  class NLastDistinctItemsGraphStage[T](n: Int) extends GraphStageWithMaterializedValue[SinkShape[T], mutable.Queue[T]] {
+    override val shape = SinkShape(Inlet[T]("nLastItems.in"))
+
+    override def createLogicAndMaterializedValue(inheritedAttributes: Attributes): (GraphStageLogic, mutable.Queue[T]) = {
+      val queue = new mutable.Queue[T]
+      (new GraphStageLogic(shape) {
+
+        setHandler(shape.in, new InHandler {
+          override def onPush(): Unit = {
+            val e = grab(shape.in)
+            if (!queue.contains(e)) {
+              queue += e
+              if (queue.size > n) queue.dequeue()
+            }
+            tryPull(shape.in)
+          }
+        })
+
+        override def preStart(): Unit = {
+          tryPull(shape.in)
+        }
+      }, queue)
+    }
+  }
+
+//  class CounterGraphStage[T] extends GraphStageWithMaterializedValue[SinkShape[T], LongAdder] {
+//    override def createLogicAndMaterializedValue(inheritedAttributes: Attributes): (GraphStageLogic, LongAdder) = {
+//      val counter = new LongAdder()
+//      (
+//        new GraphStageLogic(shape) {
+//
+//          this.setHandler(shape.in, new InHandler {
+//            override def onPush() = {
+//              grab(shape.in) // ignore
+//              counter.increment()
+//              tryPull(shape.in)
+//            }
+//          })
+//
+//          override def preStart(): Unit = {
+//            tryPull(shape.in)
+//          }
+//        }, counter)
+//    }
+//
+//    override val shape: SinkShape[T] = SinkShape(Inlet("counter.in"))
+//  }
+
 
   implicit val system = ActorSystem("couchbase-listener")
   implicit val materializer = ActorMaterializer()
   implicit val executionContext = system.dispatcher
 
+  case class MatValue[T](queue: SourceQueueWithComplete[T], count: LongAdder, lastItems: mutable.Queue[T])
+  case class Counters[T](mutations: MatValue[T], deletions: MatValue[T], expirations: MatValue[T])
 
-  case class Stats(
-                    mutation: LongAdder = new LongAdder,
-                    deletion: LongAdder = new LongAdder,
-                    expiration: LongAdder = new LongAdder,
-                    lastDocsMutated: ConcurrentLinkedQueue[String] = new ConcurrentLinkedQueue[String]()
-                  )
-
-  def listenTo(bucket: String) = {
+  def listenTo(bucket: String): Counters[String] = {
     val client = Client.configure()
       .bucket(bucket)
       .hostnames("couchbase01.stg.ps")
@@ -62,26 +128,26 @@ object CouchbaseListener extends App {
       event.release()
     }
 
-    val stats = Stats()
+    def newGraph = Source.queue[String](1000, OverflowStrategy.dropHead)
+                         .zipWithMat(Source.fromGraph(new CounterGraphStage))(Keep.left)(Keep.both)
+                         .toMat(Sink.fromGraph(new NLastDistinctItemsGraphStage(10))) { case ((a, b), c) => MatValue(a, b, c) }
+
+    val mutations = newGraph.run()
+    val deletions = newGraph.run()
+    val expirations = newGraph.run()
 
     client.dataEventHandler { event =>
       if (DcpMutationMessage.is(event)) {
-        println("mutation: " + DcpMutationMessage.toString(event))
-        stats.mutation.increment()
-        stats.lastDocsMutated.add(DcpMutationMessage.keyString(event))
+        mutations.queue.offer(DcpMutationMessage.keyString(event))
         client.acknowledgeBuffer(event)
-        if (stats.lastDocsMutated.size > 10)
-          stats.lastDocsMutated.poll()
       }
       else if (DcpDeletionMessage.is(event)) {
-        println("deletion: " + DcpMutationMessage.toString(event))
+        deletions.queue.offer(DcpDeletionMessage.keyString(event))
         client.acknowledgeBuffer(event)
-        stats.deletion.increment()
       }
       else if (DcpExpirationMessage.is(event)) {
-        println("expiration: " + DcpMutationMessage.toString(event))
+        expirations.queue.offer(DcpExpirationMessage.keyString(event))
         client.acknowledgeBuffer(event)
-        stats.expiration.increment()
       }
       else {
         println("unknown")
@@ -93,7 +159,7 @@ object CouchbaseListener extends App {
     client.initializeState(StreamFrom.NOW, StreamTo.INFINITY).await()
     client.startStreaming().await()
 
-    stats
+    Counters(mutations, deletions, expirations)
   }
 
 
@@ -111,10 +177,10 @@ object CouchbaseListener extends App {
           Source.tick(1 second, 1 second, NotUsed)
             .map(_ => ServerSentEvent(s"""
                            | {
-                           |  "mutation": ${stats.mutation.longValue()},
-                           |  "deletion": ${stats.deletion.longValue()},
-                           |  "expiration": ${stats.expiration.longValue()},
-                           |  "lastDocsMutated": [${stats.lastDocsMutated.asScala.mkString("\"",",","\"")}]
+                           |  "mutation": ${stats.mutations.count.longValue()},
+                           |  "deletion": ${stats.deletions.count.longValue()},
+                           |  "expiration": ${stats.expirations.count.longValue()},
+                           |  "lastDocsMutated": [${stats.mutations.lastItems.mkString("\"","\",\"","\"")}]
                            | }
                             """.stripMargin))
             .keepAlive(1.second, () => ServerSentEvent.heartbeat)
@@ -128,13 +194,14 @@ object CouchbaseListener extends App {
             |<head>
             |</head>
             |<body>
+            |<h1>Bucket: ${bucket}</h1>
             |<h3>Mutations</h3>
             |<canvas id="mutation" width="400" height="100"></canvas>
             |<h3>Deletions</h3>
             |<canvas id="deletion" width="400" height="100"></canvas>
             |<h3>Expirations</h3>
             |<canvas id="expiration" width="400" height="100"></canvas>
-            |<h3>Last documentation mutated</h3>
+            |<h3>Last 10 documents mutated</h3>
             |<pre id="lastMutation"></pre>
             |</div>
             |<script src="//cdnjs.cloudflare.com/ajax/libs/smoothie/1.27.0/smoothie.min.js"></script>
@@ -156,7 +223,7 @@ object CouchbaseListener extends App {
             |  mut.append(new Date().getTime(), data.mutation);
             |  del.append(new Date().getTime(), data.deletion);
             |  exp.append(new Date().getTime(), data.expiration);
-            |  document.getElementById("lastMutation").innerHTML = data.lastDocsMutated.map(x => x + "<br>");
+            |  document.getElementById("lastMutation").innerHTML = data.lastDocsMutated.reduce((acc, x) => acc + x + "<br>", "");
             |}, false);
             |</script>
             |</body>
