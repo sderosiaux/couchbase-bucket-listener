@@ -111,9 +111,9 @@ object CouchbaseListener extends App {
   implicit val executionContext = system.dispatcher
 
   case class MatValue[T](queue: SourceQueueWithComplete[T], count: LongAdder, lastItems: mutable.Queue[T])
-  case class Counters[T](mutations: MatValue[T], deletions: MatValue[T], expirations: MatValue[T])
+  case class Counters[T, U, V](mutations: MatValue[T], deletions: MatValue[U], expirations: MatValue[V])
 
-  def listenTo(bucket: String): Counters[String] = {
+  def listenTo(bucket: String): Counters[(String, Int), String, String] = {
     val client = Client.configure()
       .bucket(bucket)
       .hostnames("couchbase01.stg.ps")
@@ -128,17 +128,17 @@ object CouchbaseListener extends App {
       event.release()
     }
 
-    def newGraph = Source.queue[String](1000, OverflowStrategy.dropHead)
+    def newGraph[T] = Source.queue[T](1000, OverflowStrategy.dropHead)
                          .zipWithMat(Source.fromGraph(new CounterGraphStage))(Keep.left)(Keep.both)
                          .toMat(Sink.fromGraph(new NLastDistinctItemsGraphStage(10))) { case ((a, b), c) => MatValue(a, b, c) }
 
-    val mutations = newGraph.run()
-    val deletions = newGraph.run()
-    val expirations = newGraph.run()
+    val mutations = newGraph[(String, Int)].run()
+    val deletions = newGraph[String].run()
+    val expirations = newGraph[String].run()
 
     client.dataEventHandler { event =>
       if (DcpMutationMessage.is(event)) {
-        mutations.queue.offer(DcpMutationMessage.keyString(event))
+        mutations.queue.offer((DcpMutationMessage.keyString(event), DcpMutationMessage.expiry(event)))
         client.acknowledgeBuffer(event)
       }
       else if (DcpDeletionMessage.is(event)) {
@@ -201,7 +201,7 @@ object CouchbaseListener extends App {
             |<canvas id="deletion" width="400" height="100"></canvas>
             |<h3>Expirations</h3>
             |<canvas id="expiration" width="400" height="100"></canvas>
-            |<h3>Last 10 documents mutated</h3>
+            |<h3>Last 10 documents mutated (key, expiry)</h3>
             |<pre id="lastMutation"></pre>
             |</div>
             |<script src="//cdnjs.cloudflare.com/ajax/libs/smoothie/1.27.0/smoothie.min.js"></script>
