@@ -4,16 +4,14 @@ import akka.NotUsed
 import akka.actor.{ActorSystem, Cancellable}
 import akka.http.scaladsl.model.{ContentTypes, HttpEntity}
 import akka.http.scaladsl.server.Route
-import akka.stream.scaladsl.GraphDSL.Builder
 import akka.stream._
-import akka.stream.scaladsl.{Broadcast, Flow, GraphDSL, Merge, Source, Zip, ZipWith, ZipWithN}
+import akka.stream.scaladsl.{Broadcast, Flow, GraphDSL, Keep, Source, SourceQueueWithComplete, ZipWith}
 import akka.stream.stage.{GraphStage, GraphStageLogic, InHandler, OutHandler}
-import com.ctheu.couchbase.UI.KeyWithCounters
 import de.heikoseeberger.akkasse.ServerSentEvent
 import play.api.libs.json.Json
 
-import concurrent.duration._
-import scala.runtime.Nothing$
+import scala.concurrent.Promise
+import scala.language.postfixOps
 
 object Testing extends App {
   implicit val sys = ActorSystem()
@@ -24,7 +22,7 @@ object Testing extends App {
 }
 
 final class RepeatLastOrDefault[T](initial: T) extends GraphStage[FlowShape[T, T]] {
-  override val shape = FlowShape(Inlet[T]("HoldWithInitial.in"), Outlet[T]("HoldWithInitial.out"))
+  override val shape = FlowShape(Inlet[T]("RepeatLastOrDefault.in"), Outlet[T]("RepeatLastOrDefault.out"))
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) {
     private var currentValue: T = initial
     setHandlers(shape.in, shape.out, new InHandler with OutHandler {
@@ -43,7 +41,7 @@ final class RepeatLastOrDefault[T](initial: T) extends GraphStage[FlowShape[T, T
 }
 
 final class DefaultIfEmpty[T](initial: T) extends GraphStage[FlowShape[T, T]] {
-  override val shape = FlowShape(Inlet[T]("HoldWithInitial.in"), Outlet[T]("HoldWithInitial.out"))
+  override val shape = FlowShape(Inlet[T]("DefaultIfEmpty.in"), Outlet[T]("DefaultIfEmpty.out"))
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) {
     private var currentValue: T = initial
     setHandlers(shape.in, shape.out, new InHandler with OutHandler {
@@ -63,28 +61,26 @@ final class DefaultIfEmpty[T](initial: T) extends GraphStage[FlowShape[T, T]] {
 }
 
 object UI {
-  case class KeyWithCounters[T](key: T, total: Long, lastDelta: Long)
-  case class KeyWithExpiry(key: String, expiry: Long)
-  type MutationKey = KeyWithCounters[KeyWithExpiry]
-  type SimpleKey = KeyWithCounters[String]
-  case class Combinaison(mutations: MutationKey, deletions: SimpleKey, expirations: SimpleKey)
+  case class KeyWithCounters(total: Long, lastDelta: Long)
+  type SimpleKey = KeyWithCounters
+  case class Combinaison(mutations: SimpleKey, deletions: SimpleKey, expirations: SimpleKey)
 
-  def withCounters[Out, Mat](source: Source[Out, Mat]): Source[KeyWithCounters[Out], Mat] = {
+  def withCounters[Out, Mat](source: Source[Out, Mat]): Source[KeyWithCounters, Mat] = {
     Source.fromGraph(GraphDSL.create(source) { implicit b => s =>
       import GraphDSL.Implicits._
-      val broadcast = b.add(Broadcast[Out](3))
+      val broadcast = b.add(Broadcast[Out](2))
       val sumPerTick = b.add(Flow[Out].conflateWithSeed(_ => 0L)((r, _) => r + 1))
-      val sumTotal = b.add(Flow[Out].scan(0L)((acc, _) => acc + 1).conflate[Long]((_, last) => last))
-      val zip = b.add(ZipWith((key: Out, total: Long, last: Long) => KeyWithCounters(key, total, last)))
+      val sumTotal = b.add(Flow[Out].scan(0L)((acc, _) => acc + 1))
+      val zip = b.add(ZipWith((total: Long, last: Long) => KeyWithCounters(total, last)))
 
       def hold[T](init: T) = b.add(Flow.fromGraph(new RepeatLastOrDefault(init)))
       def default[T](init: T) = b.add(Flow.fromGraph(new DefaultIfEmpty(init)))
-      def repeat = b.add(Flow[Long].expand(sum => Iterator.continually(sum)))
+      def repeatSame = b.add(Flow[Long].expand(sum => Iterator.continually(sum)))
+      def repeat(n: Long) = b.add(Flow[Long].expand(_ => Iterator.continually(n)))
 
       s ~> broadcast
-           broadcast ~>                              zip.in0
-           broadcast ~> sumPerTick ~> default(0L) ~> zip.in1
-           broadcast ~> sumTotal   ~> hold(0L)    ~> zip.in2
+           broadcast ~> sumTotal   ~> repeatSame ~> hold(0L)   ~> zip.in0
+           broadcast ~> sumPerTick ~> repeatSame ~> default(0L) ~> zip.in1
 
       SourceShape(zip.out)
     })
@@ -96,35 +92,35 @@ object UI {
 
     import concurrent.duration._
 
-    implicit val expiryJson = Json.writes[KeyWithExpiry]
-    implicit val keysJson = Json.writes[KeyWithCounters[String]]
-    implicit val keysJson2 = Json.writes[KeyWithCounters[KeyWithExpiry]]
+    implicit val ec = sys.dispatcher
+    implicit val keysJson = Json.writes[KeyWithCounters]
     implicit val combinaisonJson2 = Json.writes[Combinaison]
 
     path("events" / """[a-z0-9\._]+""".r / """[a-z_]+""".r) { (host, bucket) =>
       get {
         complete {
-          val (mutations, deletions, expirations) = CouchbaseSource.createSources(host, bucket)
-          val sseTick = Source.tick(1 second, 1 second, NotUsed)
-          val mutationsWithCounts = withCounters(mutations.expand(_ => Iterator.continually(null.asInstanceOf[KeyWithExpiry])))
+          val (mutations, deletions, expirations) = CouchbaseSource.createSources()
+          val mutationsWithCounts = withCounters(mutations)
           val deletionsWithCounts = withCounters(deletions)
           val expirationsWithCounts = withCounters(expirations)
 
           val allCounters = GraphDSL.create(mutationsWithCounts, deletionsWithCounts, expirationsWithCounts)((_, _, _)) { implicit b => (m, d, e) =>
             import GraphDSL.Implicits._
-            val zip = b.add(ZipWith[MutationKey, SimpleKey, SimpleKey, (MutationKey, SimpleKey, SimpleKey)]((_, _, _)))
+            val zip = b.add(ZipWith[SimpleKey, SimpleKey, SimpleKey, (SimpleKey, SimpleKey, SimpleKey)]((_, _, _)))
             m ~> zip.in0
             d ~> zip.in1
             e ~> zip.in2
             SourceShape(zip.out)
           }
 
-          val allCountersTicked = sseTick.zipWith(allCounters) { case (_, counters) => counters }
+          val promise = Promise[(SourceQueueWithComplete[String], SourceQueueWithComplete[String], SourceQueueWithComplete[String])]()
+          promise.future.foreach { case (m, d, e) => CouchbaseSource.fill(host, bucket, m, d, e) }
 
-            allCountersTicked.map { case (m: MutationKey, d: SimpleKey, e: SimpleKey) =>
-              ServerSentEvent(Json.toJson(Combinaison(m, d, e)).toString())
-            }
-            .keepAlive(1.second, () => ServerSentEvent.heartbeat)
+          Source.tick(1 second, 1 second, NotUsed)
+                .zipWithMat(allCounters)(Keep.right)(Keep.right)
+                .map { case (m: SimpleKey, d: SimpleKey, e: SimpleKey) => ServerSentEvent(Json.toJson(Combinaison(m, d, e)).toString()) }
+                .keepAlive(1 second, () => ServerSentEvent.heartbeat)
+                .mapMaterializedValue { x => promise.trySuccess(x); x }
         }
       }
     } ~ path("ui" / """[a-z0-9\._]+""".r / """[a-z_]+""".r) { (host, bucket) =>
