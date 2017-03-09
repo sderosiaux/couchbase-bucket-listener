@@ -1,15 +1,11 @@
 package com.ctheu.couchbase
 
-import java.util.concurrent.atomic.LongAdder
-
 import akka.actor.ActorSystem
-import akka.stream.{Materializer, OverflowStrategy}
-import akka.stream.scaladsl.{Keep, Sink, Source, SourceQueueWithComplete}
-import com.couchbase.client.dcp.{Client, StreamFrom, StreamTo}
+import akka.stream.OverflowStrategy
+import akka.stream.scaladsl.{Source, SourceQueueWithComplete}
 import com.couchbase.client.dcp.config.DcpControl
 import com.couchbase.client.dcp.message.{DcpDeletionMessage, DcpExpirationMessage, DcpMutationMessage, DcpSnapshotMarkerRequest}
-
-import scala.collection.mutable
+import com.couchbase.client.dcp.{Client, StreamFrom, StreamTo}
 
 object CouchbaseSource {
   def fill(hostname: String, bucket: String, m: SourceQueueWithComplete[String], d: SourceQueueWithComplete[String], e: SourceQueueWithComplete[String])(implicit sys: ActorSystem) = {
@@ -54,9 +50,9 @@ object CouchbaseSource {
 
 
   def createSources() = {
-    val mutations = Source.queue[String](1000, OverflowStrategy.dropHead)
-    val deletions = Source.queue[String](1000, OverflowStrategy.dropHead)
-    val expirations = Source.queue[String](1000, OverflowStrategy.dropHead)
+    val mutations = Source.queue[String](10000, OverflowStrategy.dropHead)
+    val deletions = Source.queue[String](10000, OverflowStrategy.dropHead)
+    val expirations = Source.queue[String](10000, OverflowStrategy.dropHead)
     (mutations, deletions, expirations)
   }
 

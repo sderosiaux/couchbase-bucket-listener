@@ -1,7 +1,7 @@
-package com.ctheu.couchbase
+package com.ctheu.couchbase.graphstages
 
-import akka.stream.{Attributes, Inlet, SinkShape}
 import akka.stream.stage.{GraphStageLogic, GraphStageWithMaterializedValue, InHandler}
+import akka.stream.{Attributes, Inlet, SinkShape}
 
 import scala.collection.mutable
 

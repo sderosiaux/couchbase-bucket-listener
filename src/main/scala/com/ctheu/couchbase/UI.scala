@@ -1,64 +1,24 @@
 package com.ctheu.couchbase
 
 import akka.NotUsed
-import akka.actor.{ActorSystem, Cancellable}
+import akka.actor.ActorSystem
 import akka.http.scaladsl.model.{ContentTypes, HttpEntity}
 import akka.http.scaladsl.server.Route
+import akka.http.scaladsl.unmarshalling.Unmarshaller
 import akka.stream._
 import akka.stream.scaladsl.{Broadcast, Flow, GraphDSL, Keep, Source, SourceQueueWithComplete, ZipWith}
 import akka.stream.stage.{GraphStage, GraphStageLogic, InHandler, OutHandler}
+import com.ctheu.couchbase.graphstages.{Counter, DeltaCounter}
 import de.heikoseeberger.akkasse.ServerSentEvent
 import play.api.libs.json.Json
 
 import scala.concurrent.Promise
 import scala.language.postfixOps
 
-object Testing extends App {
-  implicit val sys = ActorSystem()
-  implicit val mat = ActorMaterializer()
 
-  val src = Source.queue[Long](100, OverflowStrategy.backpressure)
 
-}
 
-final class RepeatLastOrDefault[T](initial: T) extends GraphStage[FlowShape[T, T]] {
-  override val shape = FlowShape(Inlet[T]("RepeatLastOrDefault.in"), Outlet[T]("RepeatLastOrDefault.out"))
-  override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) {
-    private var currentValue: T = initial
-    setHandlers(shape.in, shape.out, new InHandler with OutHandler {
-      override def onPush() = {
-        currentValue = grab(shape.in)
-        pull(shape.in)
-      }
-      override def onPull() = {
-        push(shape.out, currentValue)
-      }
-    })
 
-    override def preStart() = pull(shape.in)
-  }
-
-}
-
-final class DefaultIfEmpty[T](initial: T) extends GraphStage[FlowShape[T, T]] {
-  override val shape = FlowShape(Inlet[T]("DefaultIfEmpty.in"), Outlet[T]("DefaultIfEmpty.out"))
-  override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) {
-    private var currentValue: T = initial
-    setHandlers(shape.in, shape.out, new InHandler with OutHandler {
-      override def onPush() = {
-        currentValue = grab(shape.in)
-        pull(shape.in)
-      }
-      override def onPull() = {
-        push(shape.out, currentValue)
-        currentValue = initial
-      }
-    })
-
-    override def preStart() = pull(shape.in)
-  }
-
-}
 
 object UI {
   case class KeyWithCounters(total: Long, lastDelta: Long)
@@ -69,18 +29,13 @@ object UI {
     Source.fromGraph(GraphDSL.create(source) { implicit b => s =>
       import GraphDSL.Implicits._
       val broadcast = b.add(Broadcast[Out](2))
-      val sumPerTick = b.add(Flow[Out].conflateWithSeed(_ => 0L)((r, _) => r + 1))
-      val sumTotal = b.add(Flow[Out].scan(0L)((acc, _) => acc + 1))
+      def sumPerTick = b.add(Flow.fromGraph(new DeltaCounter[Out]()))
+      def sumTotal = b.add(Flow.fromGraph(new Counter[Out]()))
       val zip = b.add(ZipWith((total: Long, last: Long) => KeyWithCounters(total, last)))
 
-      def hold[T](init: T) = b.add(Flow.fromGraph(new RepeatLastOrDefault(init)))
-      def default[T](init: T) = b.add(Flow.fromGraph(new DefaultIfEmpty(init)))
-      def repeatSame = b.add(Flow[Long].expand(sum => Iterator.continually(sum)))
-      def repeat(n: Long) = b.add(Flow[Long].expand(_ => Iterator.continually(n)))
-
       s ~> broadcast
-           broadcast ~> sumTotal   ~> repeatSame ~> hold(0L)   ~> zip.in0
-           broadcast ~> sumPerTick ~> repeatSame ~> default(0L) ~> zip.in1
+           broadcast ~> sumTotal   ~> zip.in0
+           broadcast ~> sumPerTick ~> zip.in1
 
       SourceShape(zip.out)
     })
@@ -95,79 +50,92 @@ object UI {
     implicit val ec = sys.dispatcher
     implicit val keysJson = Json.writes[KeyWithCounters]
     implicit val combinaisonJson2 = Json.writes[Combinaison]
+    val DEFAULT_DURATION: FiniteDuration = 200 millis
 
-    path("events" / """[a-z0-9\._]+""".r / """[a-z_]+""".r) { (host, bucket) =>
+    implicit val durationMarshaller = Unmarshaller.strict[String, FiniteDuration](s => FiniteDuration(s.toInt, "ms"))
+
+    path("events" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
       get {
-        complete {
-          val (mutations, deletions, expirations) = CouchbaseSource.createSources()
-          val mutationsWithCounts = withCounters(mutations)
-          val deletionsWithCounts = withCounters(deletions)
-          val expirationsWithCounts = withCounters(expirations)
+        parameter('interval.as[FiniteDuration] ?) { interval =>
+          complete {
+            val (mutations, deletions, expirations) = CouchbaseSource.createSources()
+            val mutationsWithCounts = withCounters(mutations)
+            val deletionsWithCounts = withCounters(deletions)
+            val expirationsWithCounts = withCounters(expirations)
 
-          val allCounters = GraphDSL.create(mutationsWithCounts, deletionsWithCounts, expirationsWithCounts)((_, _, _)) { implicit b => (m, d, e) =>
-            import GraphDSL.Implicits._
-            val zip = b.add(ZipWith[SimpleKey, SimpleKey, SimpleKey, (SimpleKey, SimpleKey, SimpleKey)]((_, _, _)))
-            m ~> zip.in0
-            d ~> zip.in1
-            e ~> zip.in2
-            SourceShape(zip.out)
+            val allCounters = GraphDSL.create(mutationsWithCounts, deletionsWithCounts, expirationsWithCounts)((_, _, _)) { implicit b =>
+              (m, d, e) =>
+                import GraphDSL.Implicits._
+                val zip = b.add(ZipWith[SimpleKey, SimpleKey, SimpleKey, (SimpleKey, SimpleKey, SimpleKey)]((_, _, _)))
+                m ~> zip.in0
+                d ~> zip.in1
+                e ~> zip.in2
+                SourceShape(zip.out)
+            }
+
+            val promise = Promise[(SourceQueueWithComplete[String], SourceQueueWithComplete[String], SourceQueueWithComplete[String])]()
+            promise.future.foreach { case (m, d, e) => CouchbaseSource.fill(host, bucket, m, d, e) }
+
+            Source.tick(1 second, interval.getOrElse(DEFAULT_DURATION), NotUsed)
+              .zipWithMat(allCounters)(Keep.right)(Keep.right)
+              .map { case (m: SimpleKey, d: SimpleKey, e: SimpleKey) => ServerSentEvent(Json.toJson(Combinaison(m, d, e)).toString()) }
+              .keepAlive(1 second, () => ServerSentEvent.heartbeat)
+              .mapMaterializedValue { x => promise.trySuccess(x); x }
           }
-
-          val promise = Promise[(SourceQueueWithComplete[String], SourceQueueWithComplete[String], SourceQueueWithComplete[String])]()
-          promise.future.foreach { case (m, d, e) => CouchbaseSource.fill(host, bucket, m, d, e) }
-
-          Source.tick(1 second, 1 second, NotUsed)
-                .zipWithMat(allCounters)(Keep.right)(Keep.right)
-                .map { case (m: SimpleKey, d: SimpleKey, e: SimpleKey) => ServerSentEvent(Json.toJson(Combinaison(m, d, e)).toString()) }
-                .keepAlive(1 second, () => ServerSentEvent.heartbeat)
-                .mapMaterializedValue { x => promise.trySuccess(x); x }
         }
       }
-    } ~ path("ui" / """[a-z0-9\._]+""".r / """[a-z_]+""".r) { (host, bucket) =>
+    } ~ path("ui" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
       get {
-        complete(HttpEntity(ContentTypes.`text/html(UTF-8)`,
-          s"""
-             |<html>
-             |<head>
-             |</head>
-             |<body>
-             |<h1>Bucket: $bucket</h1>
-             |<h3>Mutations</h3>
-             |<canvas id="mutation" width="400" height="100"></canvas>
-             |<h3>Deletions</h3>
-             |<canvas id="deletion" width="400" height="100"></canvas>
-             |<h3>Expirations</h3>
-             |<canvas id="expiration" width="400" height="100"></canvas>
-             |<h3>Last 10 documents mutated (key, expiry)</h3>
-             |<pre id="lastMutation"></pre>
-             |</div>
-             |<script src="//cdnjs.cloudflare.com/ajax/libs/smoothie/1.27.0/smoothie.min.js"></script>
-             |<script>
-             |function ch(id) {
-             |const chart = new SmoothieChart({millisPerPixel:100,maxValueScale:1.5,grid:{strokeStyle:'rgba(119,119,119,0.43)'}});
-             |const series = new TimeSeries();
-             |chart.addTimeSeries(series, { strokeStyle: 'rgba(0, 255, 0, 1)', fillStyle: 'rgba(0, 255, 0, 0.2)', lineWidth: 4 });
-             |chart.streamTo(document.getElementById(id), 1000);
-             |return series;
-             |}
-             |const mut = ch("mutation")
-             |const del = ch("deletion")
-             |const exp = ch("expiration")
-             |
-            |var source = new EventSource('/events/$host/$bucket');
-             |source.addEventListener('message', function(e) {
-             |  var data = JSON.parse(e.data);
-             |  mut.append(new Date().getTime(), data.mutation);
-             |  del.append(new Date().getTime(), data.deletion);
-             |  exp.append(new Date().getTime(), data.expiration);
-             |  document.getElementById("lastMutation").innerHTML = data.lastDocsMutated.reduce((acc, x) => acc + x + "<br>", "");
-             |}, false);
-             |</script>
-             |</body>
-             |</html>
-             |
-          """.stripMargin
-        ))
+        parameter('interval.as[Int] ?) { interval =>
+          complete(HttpEntity(ContentTypes.`text/html(UTF-8)`,
+            s"""
+               |<html>
+               |<head>
+               |<style>
+               |.type { display: flex; }
+               |.type span { font-weight: bold; font-size: 20px; }}
+               |</style>
+               |</head>
+               |<body>
+               |<h1>Bucket: $bucket</h1>
+               |<h3>Mutations</h3>
+               |<div class="type"><canvas id="mutation" width="400" height="100"></canvas><div>Total: <span id="muttotal"></span></div></div>
+               |<h3>Deletions</h3>
+               |<div class="type"><canvas id="deletion" width="400" height="100"></canvas><div>Total: <span id="deltotal"></span></div></div>
+               |<h3>Expirations</h3>
+               |<div class="type"><canvas id="expiration" width="400" height="100"></canvas><div>Total: <span id="exptotal"></span></div></div>
+               |<h3>Last 10 documents mutated (key, expiry)</h3>
+               |<pre id="lastMutation"></pre>
+               |</div>
+               |<script src="//cdnjs.cloudflare.com/ajax/libs/smoothie/1.27.0/smoothie.min.js"></script>
+               |<script>
+               |function ch(id) {
+               |const chart = new SmoothieChart({millisPerPixel:100,maxValueScale:1.5,grid:{strokeStyle:'rgba(119,119,119,0.43)'}});
+               |const series = new TimeSeries();
+               |chart.addTimeSeries(series, { strokeStyle: 'rgba(0, 255, 0, 1)', fillStyle: 'rgba(0, 255, 0, 0.2)', lineWidth: 1 });
+               |chart.streamTo(document.getElementById(id), 1000);
+               |return series;
+               |}
+               |const mut = ch("mutation")
+               |const del = ch("deletion")
+               |const exp = ch("expiration")
+               |
+               |function update(sel, value) { document.getElementById(sel + "total").innerHTML = value; }
+               |var source = new EventSource('/events/$host/$bucket?${interval.map("interval=" + _).getOrElse("")}');
+               |source.addEventListener('message', function(e) {
+               |  var data = JSON.parse(e.data);
+               |  mut.append(new Date().getTime(), data.mutations.lastDelta); update("mut", data.mutations.total);
+               |  del.append(new Date().getTime(), data.deletions.lastDelta); update("del", data.deletions.total);
+               |  exp.append(new Date().getTime(), data.expirations.lastDelta); update("exp", data.expirations.total);
+               |  //document.getElementById("lastMutation").innerHTML = data.lastDocsMutated.reduce((acc, x) => acc + x + "<br>", "");
+               |}, false);
+               |</script>
+               |</body>
+               |</html>
+               |
+            """.stripMargin
+          ))
+        }
       }
     }
   }
