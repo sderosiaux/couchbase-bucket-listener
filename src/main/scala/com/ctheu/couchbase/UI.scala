@@ -1,45 +1,20 @@
 package com.ctheu.couchbase
 
-import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.http.scaladsl.model.{ContentTypes, HttpEntity}
 import akka.http.scaladsl.server.Route
 import akka.http.scaladsl.unmarshalling.Unmarshaller
 import akka.stream._
-import akka.stream.scaladsl.{Broadcast, Flow, GraphDSL, Keep, Source, SourceQueueWithComplete, ZipWith}
-import akka.stream.stage.{GraphStage, GraphStageLogic, InHandler, OutHandler}
-import com.ctheu.couchbase.graphstages.{Counter, DeltaCounter}
+import akka.stream.scaladsl.SourceQueueWithComplete
 import de.heikoseeberger.akkasse.ServerSentEvent
 import play.api.libs.json.Json
 
 import scala.concurrent.Promise
 import scala.language.postfixOps
 
-
-
-
-
-
 object UI {
-  case class KeyWithCounters(total: Long, lastDelta: Long)
-  type SimpleKey = KeyWithCounters
-  case class Combinaison(mutations: SimpleKey, deletions: SimpleKey, expirations: SimpleKey)
 
-  def withCounters[Out, Mat](source: Source[Out, Mat]): Source[KeyWithCounters, Mat] = {
-    Source.fromGraph(GraphDSL.create(source) { implicit b => s =>
-      import GraphDSL.Implicits._
-      val broadcast = b.add(Broadcast[Out](2))
-      def sumPerTick = b.add(Flow.fromGraph(new DeltaCounter[Out]()))
-      def sumTotal = b.add(Flow.fromGraph(new Counter[Out]()))
-      val zip = b.add(ZipWith((total: Long, last: Long) => KeyWithCounters(total, last)))
-
-      s ~> broadcast
-           broadcast ~> sumTotal   ~> zip.in0
-           broadcast ~> sumPerTick ~> zip.in1
-
-      SourceShape(zip.out)
-    })
-  }
+  import CouchbaseGraph._
 
   def route()(implicit sys: ActorSystem, mat: Materializer): Route = {
     import akka.http.scaladsl.server.Directives._
@@ -56,28 +31,12 @@ object UI {
 
     path("events" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
       get {
-        parameter('interval.as[FiniteDuration] ?) { interval =>
+        parameter('interval.as[FiniteDuration] ? DEFAULT_DURATION) { interval =>
           complete {
-            val (mutations, deletions, expirations) = CouchbaseSource.createSources()
-            val mutationsWithCounts = withCounters(mutations)
-            val deletionsWithCounts = withCounters(deletions)
-            val expirationsWithCounts = withCounters(expirations)
-
-            val allCounters = GraphDSL.create(mutationsWithCounts, deletionsWithCounts, expirationsWithCounts)((_, _, _)) { implicit b =>
-              (m, d, e) =>
-                import GraphDSL.Implicits._
-                val zip = b.add(ZipWith[SimpleKey, SimpleKey, SimpleKey, (SimpleKey, SimpleKey, SimpleKey)]((_, _, _)))
-                m ~> zip.in0
-                d ~> zip.in1
-                e ~> zip.in2
-                SourceShape(zip.out)
-            }
-
             val promise = Promise[(SourceQueueWithComplete[String], SourceQueueWithComplete[String], SourceQueueWithComplete[String])]()
             promise.future.foreach { case (m, d, e) => CouchbaseSource.fill(host, bucket, m, d, e) }
 
-            Source.tick(1 second, interval.getOrElse(DEFAULT_DURATION), NotUsed)
-              .zipWithMat(allCounters)(Keep.right)(Keep.right)
+            CouchbaseGraph.counters(host, bucket, interval)
               .map { case (m: SimpleKey, d: SimpleKey, e: SimpleKey) => ServerSentEvent(Json.toJson(Combinaison(m, d, e)).toString()) }
               .keepAlive(1 second, () => ServerSentEvent.heartbeat)
               .mapMaterializedValue { x => promise.trySuccess(x); x }

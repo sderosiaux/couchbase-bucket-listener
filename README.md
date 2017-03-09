@@ -15,6 +15,9 @@ You'll get this UI updated in real-time:
 
 ![ui](ui.png)
 
-- It displays some counters of the buckets starting at the time you connect.
-- It displays the 10 last mutated documents of the bucket, with their expiry if any.
+It is refreshed every 200ms by default, but this is configurable: `http://localhost:8080/ui/couchbase01/travel?interval=1000`
+ 
+- It displays the total of events starting at the time you connect.
+- It displays a chart per events containing the delta per interval.
+- It displays the N last mutated documents of the bucket, with their expiry if any.
 
