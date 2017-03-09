@@ -8,69 +8,63 @@ import akka.stream.scaladsl.{Keep, Sink, Source, SourceQueueWithComplete}
 import com.couchbase.client.dcp.{Client, StreamFrom, StreamTo}
 import com.couchbase.client.dcp.config.DcpControl
 import com.couchbase.client.dcp.message.{DcpDeletionMessage, DcpExpirationMessage, DcpMutationMessage, DcpSnapshotMarkerRequest}
+import com.ctheu.couchbase.UI.KeyWithExpiry
 
 import scala.collection.mutable
 
-case class MatValue[T](queue: SourceQueueWithComplete[T], count: LongAdder, lastItems: mutable.Queue[T])
-case class RealTimeStats[T, U, V](mutations: MatValue[T], deletions: MatValue[U], expirations: MatValue[V])
-
 object CouchbaseSource {
 
-  def listenTo(hostname: String, bucket: String)(implicit sys: ActorSystem, mat: Materializer): RealTimeStats[(String, Int), String, String] = {
+  def createSources(hostname: String, bucket: String)(implicit sys: ActorSystem, mat: Materializer) = {
 
     sys.log.info(s"Will listen to DCP of $hostname:$bucket")
 
     // Akka Streams, here we go!
 
-    def newGraph[T] = Source.queue[T](1000, OverflowStrategy.dropHead)
-      .zipWithMat(Source.fromGraph(new CounterGraphStage))(Keep.left)(Keep.both)
-      .toMat(Sink.fromGraph(new NLastDistinctItemsGraphStage(10))) { case ((a, b), c) => MatValue(a, b, c) }
-
-    val mutations = newGraph[(String, Int)].run()
-    val deletions = newGraph[String].run()
-    val expirations = newGraph[String].run()
+    val mutations = Source.queue[KeyWithExpiry](1000, OverflowStrategy.dropHead)
+    val deletions = Source.queue[String](1000, OverflowStrategy.dropHead)
+    val expirations = Source.queue[String](1000, OverflowStrategy.dropHead)
 
     // Populate the sources with Couchbase data callbacks
-
-    val client = createClient(hostname, bucket)
-
-    client.controlEventHandler { event =>
-      if (DcpSnapshotMarkerRequest.is(event)) {
-        client.acknowledgeBuffer(event)
-      }
-      event.release()
-    }
-
-    client.dataEventHandler { event =>
-      if (DcpMutationMessage.is(event)) {
-        mutations.queue.offer((DcpMutationMessage.keyString(event), DcpMutationMessage.expiry(event)))
-        client.acknowledgeBuffer(event)
-      }
-      else if (DcpDeletionMessage.is(event)) {
-        deletions.queue.offer(DcpDeletionMessage.keyString(event))
-        client.acknowledgeBuffer(event)
-      }
-      else if (DcpExpirationMessage.is(event)) {
-        expirations.queue.offer(DcpExpirationMessage.keyString(event))
-        client.acknowledgeBuffer(event)
-      }
-      else {
-        sys.log.warning("Unknown Couchbase event")
-      }
-      event.release()
-    }
-
-    // Start the Couchbase streaming
-
-    client.connect().await()
-    client.initializeState(StreamFrom.NOW, StreamTo.INFINITY).await()
-    client.startStreaming().await()
-
-    sys.log.info("Streaming has started")
+//
+//    val client = createClient(hostname, bucket)
+//
+//    client.controlEventHandler { event =>
+//      if (DcpSnapshotMarkerRequest.is(event)) {
+//        client.acknowledgeBuffer(event)
+//      }
+//      event.release()
+//    }
+//
+//    client.dataEventHandler { event =>
+//      if (DcpMutationMessage.is(event)) {
+//        mutations.offer((DcpMutationMessage.keyString(event), DcpMutationMessage.expiry(event)))
+//        client.acknowledgeBuffer(event)
+//      }
+//      else if (DcpDeletionMessage.is(event)) {
+//        deletions.offer(DcpDeletionMessage.keyString(event))
+//        client.acknowledgeBuffer(event)
+//      }
+//      else if (DcpExpirationMessage.is(event)) {
+//        expirations.offer(DcpExpirationMessage.keyString(event))
+//        client.acknowledgeBuffer(event)
+//      }
+//      else {
+//        sys.log.warning("Unknown Couchbase event")
+//      }
+//      event.release()
+//    }
+//
+//    // Start the Couchbase streaming
+//
+//    client.connect().await()
+//    client.initializeState(StreamFrom.NOW, StreamTo.INFINITY).await()
+//    client.startStreaming().await()
+//
+//    sys.log.info("Streaming has started")
 
     // This will contain up-to-date data
 
-    RealTimeStats(mutations, deletions, expirations)
+    (mutations, deletions, expirations)
   }
 
   private def createClient(hostname: String, bucket: String) = {
