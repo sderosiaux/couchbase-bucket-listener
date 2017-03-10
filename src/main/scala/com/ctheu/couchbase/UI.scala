@@ -23,8 +23,8 @@ object UI {
     import concurrent.duration._
 
     implicit val ec = sys.dispatcher
-    implicit val keysJson = Json.writes[KeyWithCounters]
-    implicit val combinaisonJson2 = Json.writes[Combinaison]
+    implicit val keysJson = Json.writes[KeyWithCounters[String]]
+    implicit val combinaisonJson2 = Json.writes[Combinaison[String]]
     val DEFAULT_DURATION: FiniteDuration = 200 millis
 
     implicit val durationMarshaller = Unmarshaller.strict[String, FiniteDuration](s => FiniteDuration(s.toInt, "ms"))
@@ -36,8 +36,8 @@ object UI {
             val promise = Promise[(SourceQueueWithComplete[String], SourceQueueWithComplete[String], SourceQueueWithComplete[String])]()
             promise.future.foreach { case (m, d, e) => CouchbaseSource.fill(host, bucket, m, d, e) }
 
-            CouchbaseGraph.counters(host, bucket, interval)
-              .map { case (m: SimpleKey, d: SimpleKey, e: SimpleKey) => ServerSentEvent(Json.toJson(Combinaison(m, d, e)).toString()) }
+            CouchbaseGraph.source(host, bucket, interval)
+              .map { case (m: SimpleKey[String], d: SimpleKey[String], e: SimpleKey[String]) => ServerSentEvent(Json.toJson(Combinaison(m, d, e)).toString()) }
               .keepAlive(1 second, () => ServerSentEvent.heartbeat)
               .mapMaterializedValue { x => promise.trySuccess(x); x }
           }
@@ -63,7 +63,7 @@ object UI {
                |<div class="type"><canvas id="deletion" width="400" height="100"></canvas><div>Total: <span id="deltotal"></span></div></div>
                |<h3>Expirations</h3>
                |<div class="type"><canvas id="expiration" width="400" height="100"></canvas><div>Total: <span id="exptotal"></span></div></div>
-               |<h3>Last 10 documents mutated (key, expiry)</h3>
+               |<h3>Last 10 documents mutated (key, expiry), earliest to oldest</h3>
                |<pre id="lastMutation"></pre>
                |</div>
                |<script src="//cdnjs.cloudflare.com/ajax/libs/smoothie/1.27.0/smoothie.min.js"></script>
@@ -86,7 +86,7 @@ object UI {
                |  mut.append(new Date().getTime(), data.mutations.lastDelta); update("mut", data.mutations.total);
                |  del.append(new Date().getTime(), data.deletions.lastDelta); update("del", data.deletions.total);
                |  exp.append(new Date().getTime(), data.expirations.lastDelta); update("exp", data.expirations.total);
-               |  //document.getElementById("lastMutation").innerHTML = data.lastDocsMutated.reduce((acc, x) => acc + x + "<br>", "");
+               |  document.getElementById("lastMutation").innerHTML = data.mutations.last.reverse().reduce((acc, x) => acc + x + "<br>", "");
                |}, false);
                |</script>
                |</body>

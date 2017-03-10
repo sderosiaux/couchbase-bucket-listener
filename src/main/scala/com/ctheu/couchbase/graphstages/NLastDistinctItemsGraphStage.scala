@@ -1,31 +1,35 @@
 package com.ctheu.couchbase.graphstages
 
-import akka.stream.stage.{GraphStageLogic, GraphStageWithMaterializedValue, InHandler}
-import akka.stream.{Attributes, Inlet, SinkShape}
+import akka.stream.stage._
+import akka.stream._
 
 import scala.collection.mutable
 
-class NLastDistinctItemsGraphStage[T](n: Int) extends GraphStageWithMaterializedValue[SinkShape[T], mutable.Queue[T]] {
-  override val shape = SinkShape(Inlet[T]("nLastItems.in"))
+class NLastDistinctItemsGraphStage[T](n: Int) extends GraphStage[FlowShape[T, Seq[T]]] {
+  override val shape = FlowShape(Inlet[T]("NLastDistinctItemsGraphStage.in"), Outlet[Seq[T]]("NLastDistinctItemsGraphStage.out"))
 
-  override def createLogicAndMaterializedValue(inheritedAttributes: Attributes): (GraphStageLogic, mutable.Queue[T]) = {
+  override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = {
     val queue = new mutable.Queue[T]
-    (new GraphStageLogic(shape) {
+    new GraphStageLogic(shape) with InHandler with OutHandler {
 
-      setHandler(shape.in, new InHandler {
-        override def onPush(): Unit = {
-          val e = grab(shape.in)
-          if (!queue.contains(e)) {
-            queue += e
-            if (queue.size > n) queue.dequeue()
-          }
-          tryPull(shape.in)
-        }
-      })
+      setHandlers(shape.in, shape.out, this)
 
       override def preStart(): Unit = {
         tryPull(shape.in)
       }
-    }, queue)
+
+      override def onPush(): Unit = {
+        val e = grab(shape.in)
+        if (!queue.contains(e)) {
+          queue += e
+          if (queue.size > n) queue.dequeue()
+        }
+        tryPull(shape.in)
+      }
+
+      override def onPull(): Unit = {
+        push(shape.out, queue)
+      }
+    }
   }
 }
