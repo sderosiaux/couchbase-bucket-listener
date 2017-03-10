@@ -117,8 +117,9 @@ object UI {
                |    .then(res => res.json())
                |    .then(doc => {
                |      const block = document.getElementById("right")
-               |      block.innerHTML =JSON.stringify(doc, null, 2)
+               |      block.innerHTML = JSON.stringify(doc, null, 2)
                |      hljs.highlightBlock(block)
+               |      block.innerHTML = key + "\\n" + "-".repeat(key.length) + "\\n\\n\\n" + block.innerHTML
                |    })
                |}
                |var source = new EventSource('/events/$host/$bucket?interval=${interval.toMillis}&n=$n');
