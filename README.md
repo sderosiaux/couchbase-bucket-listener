@@ -1,4 +1,4 @@
-# Couchbase Listener
+# Couchbase Bucket Listener
 
 A tiny admin displaying some info in real-time about a particular bucket in a Couchbase cluster.
 
