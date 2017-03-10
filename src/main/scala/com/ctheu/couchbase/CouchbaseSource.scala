@@ -1,36 +1,17 @@
 package com.ctheu.couchbase
 
-import java.util.concurrent.atomic.LongAdder
-
 import akka.actor.ActorSystem
-import akka.stream.{Materializer, OverflowStrategy}
-import akka.stream.scaladsl.{Keep, Sink, Source, SourceQueueWithComplete}
-import com.couchbase.client.dcp.{Client, StreamFrom, StreamTo}
+import akka.stream.OverflowStrategy
+import akka.stream.scaladsl.{Source, SourceQueueWithComplete}
 import com.couchbase.client.dcp.config.DcpControl
 import com.couchbase.client.dcp.message.{DcpDeletionMessage, DcpExpirationMessage, DcpMutationMessage, DcpSnapshotMarkerRequest}
+import com.couchbase.client.dcp.{Client, StreamFrom, StreamTo}
 
-import scala.collection.mutable
-
-case class MatValue[T](queue: SourceQueueWithComplete[T], count: LongAdder, lastItems: mutable.Queue[T])
-case class RealTimeStats[T, U, V](mutations: MatValue[T], deletions: MatValue[U], expirations: MatValue[V])
+case class KeyWithExpiry(key: String, expiry: Int)
 
 object CouchbaseSource {
-
-  def listenTo(hostname: String, bucket: String)(implicit sys: ActorSystem, mat: Materializer): RealTimeStats[(String, Int), String, String] = {
-
+  def fill(hostname: String, bucket: String, m: SourceQueueWithComplete[KeyWithExpiry], d: SourceQueueWithComplete[String], e: SourceQueueWithComplete[String])(implicit sys: ActorSystem) = {
     sys.log.info(s"Will listen to DCP of $hostname:$bucket")
-
-    // Akka Streams, here we go!
-
-    def newGraph[T] = Source.queue[T](1000, OverflowStrategy.dropHead)
-      .zipWithMat(Source.fromGraph(new CounterGraphStage))(Keep.left)(Keep.both)
-      .toMat(Sink.fromGraph(new NLastDistinctItemsGraphStage(10))) { case ((a, b), c) => MatValue(a, b, c) }
-
-    val mutations = newGraph[(String, Int)].run()
-    val deletions = newGraph[String].run()
-    val expirations = newGraph[String].run()
-
-    // Populate the sources with Couchbase data callbacks
 
     val client = createClient(hostname, bucket)
 
@@ -43,15 +24,15 @@ object CouchbaseSource {
 
     client.dataEventHandler { event =>
       if (DcpMutationMessage.is(event)) {
-        mutations.queue.offer((DcpMutationMessage.keyString(event), DcpMutationMessage.expiry(event)))
+        m.offer(KeyWithExpiry(DcpMutationMessage.keyString(event), DcpMutationMessage.expiry(event)))
         client.acknowledgeBuffer(event)
       }
       else if (DcpDeletionMessage.is(event)) {
-        deletions.queue.offer(DcpDeletionMessage.keyString(event))
+        d.offer(DcpDeletionMessage.keyString(event))
         client.acknowledgeBuffer(event)
       }
       else if (DcpExpirationMessage.is(event)) {
-        expirations.queue.offer(DcpExpirationMessage.keyString(event))
+        e.offer(DcpExpirationMessage.keyString(event))
         client.acknowledgeBuffer(event)
       }
       else {
@@ -67,10 +48,14 @@ object CouchbaseSource {
     client.startStreaming().await()
 
     sys.log.info("Streaming has started")
+  }
 
-    // This will contain up-to-date data
 
-    RealTimeStats(mutations, deletions, expirations)
+  def createSources() = {
+    val mutations = Source.queue[KeyWithExpiry](10000, OverflowStrategy.dropHead)
+    val deletions = Source.queue[String](10000, OverflowStrategy.dropHead)
+    val expirations = Source.queue[String](10000, OverflowStrategy.dropHead)
+    (mutations, deletions, expirations)
   }
 
   private def createClient(hostname: String, bucket: String) = {
