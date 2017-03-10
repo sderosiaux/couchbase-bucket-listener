@@ -1,9 +1,9 @@
 package com.ctheu.couchbase
 
 import akka.actor.ActorSystem
-import akka.http.scaladsl.model.{ContentTypes, HttpEntity}
+import akka.http.scaladsl.model.{ContentTypes, HttpEntity, HttpRequest}
 import akka.http.scaladsl.server.Route
-import akka.http.scaladsl.unmarshalling.Unmarshaller
+import akka.http.scaladsl.unmarshalling._
 import akka.stream._
 import akka.stream.scaladsl.SourceQueueWithComplete
 import de.heikoseeberger.akkasse.ServerSentEvent
@@ -26,17 +26,20 @@ object UI {
     implicit val keysJson = Json.writes[KeyWithCounters[String]]
     implicit val combinaisonJson2 = Json.writes[Combinaison[String]]
     val DEFAULT_DURATION: FiniteDuration = 200 millis
+    val DEFAULT_COUNT = 10
 
     implicit val durationMarshaller = Unmarshaller.strict[String, FiniteDuration](s => FiniteDuration(s.toInt, "ms"))
 
+    case class QueryParams(interval: FiniteDuration, nLast: Int)
+
     path("events" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
       get {
-        parameter('interval.as[FiniteDuration] ? DEFAULT_DURATION) { interval =>
+        parameters('interval.as[FiniteDuration] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT) { (interval, nLast) =>
           complete {
             val promise = Promise[(SourceQueueWithComplete[String], SourceQueueWithComplete[String], SourceQueueWithComplete[String])]()
             promise.future.foreach { case (m, d, e) => CouchbaseSource.fill(host, bucket, m, d, e) }
 
-            CouchbaseGraph.source(host, bucket, interval)
+            CouchbaseGraph.source(host, bucket, interval, nLast)
               .map { case (m: SimpleKey[String], d: SimpleKey[String], e: SimpleKey[String]) => ServerSentEvent(Json.toJson(Combinaison(m, d, e)).toString()) }
               .keepAlive(1 second, () => ServerSentEvent.heartbeat)
               .mapMaterializedValue { x => promise.trySuccess(x); x }
@@ -45,7 +48,7 @@ object UI {
       }
     } ~ path("ui" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
       get {
-        parameter('interval.as[Int] ?) { interval =>
+        parameter('interval.as[Int] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT) { (interval, n) =>
           complete(HttpEntity(ContentTypes.`text/html(UTF-8)`,
             s"""
                |<html>
@@ -63,7 +66,7 @@ object UI {
                |<div class="type"><canvas id="deletion" width="400" height="100"></canvas><div>Total: <span id="deltotal"></span></div></div>
                |<h3>Expirations</h3>
                |<div class="type"><canvas id="expiration" width="400" height="100"></canvas><div>Total: <span id="exptotal"></span></div></div>
-               |<h3>Last 10 documents mutated (key, expiry), earliest to oldest</h3>
+               |<h3>Last $n documents mutated (key, expiry), earliest to oldest</h3>
                |<pre id="lastMutation"></pre>
                |</div>
                |<script src="//cdnjs.cloudflare.com/ajax/libs/smoothie/1.27.0/smoothie.min.js"></script>
@@ -80,7 +83,7 @@ object UI {
                |const exp = ch("expiration")
                |
                |function update(sel, value) { document.getElementById(sel + "total").innerHTML = value; }
-               |var source = new EventSource('/events/$host/$bucket?${interval.map("interval=" + _).getOrElse("")}');
+               |var source = new EventSource('/events/$host/$bucket?interval=${interval.toMillis}&n=$n');
                |source.addEventListener('message', function(e) {
                |  var data = JSON.parse(e.data);
                |  mut.append(new Date().getTime(), data.mutations.lastDelta); update("mut", data.mutations.total);
