@@ -9,7 +9,7 @@ Example: `http://localhost:8080/ui/couchbase01/travel`
 
 You'll get this UI updated in real-time:
 
-![ui](ui.png)
+![ui](ui.gif)
 
 # Features
 
