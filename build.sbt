@@ -12,4 +12,5 @@ libraryDependencies += "org.slf4j" % "slf4j-api" % "1.7.24"
 libraryDependencies += "org.slf4j" % "slf4j-simple" % "1.7.24"
 libraryDependencies += "de.heikoseeberger" %% "akka-sse" % "2.0.0"
 libraryDependencies += "com.typesafe.play" %% "play-json" % "2.6.0-M1"
+libraryDependencies += "com.couchbase.client" % "java-client" % "2.4.3"
 enablePlugins(JavaAppPackaging)

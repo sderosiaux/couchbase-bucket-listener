@@ -1,13 +1,18 @@
 package com.ctheu.couchbase
 
+import java.util.concurrent.ConcurrentHashMap
+
 import akka.actor.ActorSystem
 import akka.http.scaladsl.model.{ContentTypes, HttpEntity, HttpRequest}
 import akka.http.scaladsl.server.Route
 import akka.http.scaladsl.unmarshalling._
 import akka.stream._
 import akka.stream.scaladsl.SourceQueueWithComplete
+import com.couchbase.client.java.{AsyncBucket, CouchbaseCluster}
+import com.couchbase.client.java.document.JsonDocument
 import de.heikoseeberger.akkasse.ServerSentEvent
-import play.api.libs.json.Json
+import play.api.libs.json.{JsValue, Json, Writes}
+import rx.Observable
 
 import scala.concurrent.Promise
 import scala.language.postfixOps
@@ -22,25 +27,38 @@ object UI {
 
     import concurrent.duration._
 
+
     implicit val ec = sys.dispatcher
     implicit val keysJson = Json.writes[KeyWithCounters[String]]
-    implicit val combinaisonJson2 = Json.writes[Combinaison[String]]
+    implicit val combinaisonJson = Json.writes[Combinaison[String, String, String]]
+    implicit val tupleJson = Json.writes[KeyWithExpiry]
+    implicit val keysExpiryJson = Json.writes[KeyWithCounters[KeyWithExpiry]]
+
+    implicit val combinaisonJsonWithExpiry = Json.writes[Combinaison[KeyWithExpiry, String, String]]
+    implicit val durationMarshaller = Unmarshaller.strict[String, FiniteDuration](s => FiniteDuration(s.toInt, "ms"))
+
     val DEFAULT_DURATION: FiniteDuration = 200 millis
     val DEFAULT_COUNT = 10
 
-    implicit val durationMarshaller = Unmarshaller.strict[String, FiniteDuration](s => FiniteDuration(s.toInt, "ms"))
+    val connectionsCache = collection.mutable.Map[(String, String), AsyncBucket]()
 
-    case class QueryParams(interval: FiniteDuration, nLast: Int)
-
-    path("events" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
+    path("documents" / """[-a-z0-9\._]+""".r / """[-a-z0-9\._]+""".r / """[-a-zA-Z0-9\._:]+""".r) { (host, bucket, key) =>
+      get {
+        complete {
+          val b = connectionsCache.getOrElseUpdate((host, bucket), CouchbaseCluster.create(host).openBucket(bucket).async())
+          val doc: JsonDocument = b.get(key).toBlocking.last()
+          HttpEntity(doc.content().toString)
+        }
+      }
+    } ~ path("events" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
       get {
         parameters('interval.as[FiniteDuration] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT) { (interval, nLast) =>
           complete {
-            val promise = Promise[(SourceQueueWithComplete[String], SourceQueueWithComplete[String], SourceQueueWithComplete[String])]()
+            val promise = Promise[(SourceQueueWithComplete[KeyWithExpiry], SourceQueueWithComplete[String], SourceQueueWithComplete[String])]()
             promise.future.foreach { case (m, d, e) => CouchbaseSource.fill(host, bucket, m, d, e) }
 
             CouchbaseGraph.source(host, bucket, interval, nLast)
-              .map { case (m: SimpleKey[String], d: SimpleKey[String], e: SimpleKey[String]) => ServerSentEvent(Json.toJson(Combinaison(m, d, e)).toString()) }
+              .map { case (m: KeyWithCounters[KeyWithExpiry], d: KeyWithCounters[String], e: KeyWithCounters[String]) => ServerSentEvent(Json.toJson(Combinaison(m, d, e)).toString()) }
               .keepAlive(1 second, () => ServerSentEvent.heartbeat)
               .mapMaterializedValue { x => promise.trySuccess(x); x }
           }
@@ -55,20 +73,30 @@ object UI {
                |<head>
                |<style>
                |.type { display: flex; }
-               |.type span { font-weight: bold; font-size: 20px; }}
+               |#panels { display: flex; }
+               |.type div { display: flex; align-items: center; justify-content: center; padding: 10px; flex-direction: column; }
+               |.type span { font-weight: bold; font-size: 20px; }
+               |#right { flex: 1; margin: 10px; padding: 20px; background: rgba(0,0,0,.1); border: 1px solid #ccc; }
                |</style>
+               |<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.10.0/styles/idea.min.css">
                |</head>
                |<body>
                |<h1>Bucket: $bucket</h1>
+               |<div id="panels">
+               |<div id="left">
                |<h3>Mutations</h3>
-               |<div class="type"><canvas id="mutation" width="400" height="100"></canvas><div>Total: <span id="muttotal"></span></div></div>
+               |<div class="type"><canvas id="mutation" width="400" height="100"></canvas><div>Total<span id="muttotal"></span></div></div>
                |<h3>Deletions</h3>
-               |<div class="type"><canvas id="deletion" width="400" height="100"></canvas><div>Total: <span id="deltotal"></span></div></div>
+               |<div class="type"><canvas id="deletion" width="400" height="100"></canvas><div>Total<span id="deltotal"></span></div></div>
                |<h3>Expirations</h3>
-               |<div class="type"><canvas id="expiration" width="400" height="100"></canvas><div>Total: <span id="exptotal"></span></div></div>
+               |<div class="type"><canvas id="expiration" width="400" height="100"></canvas><div>Total<span id="exptotal"></span></div></div>
                |<h3>Last $n documents mutated (key, expiry), earliest to oldest</h3>
-               |<pre id="lastMutation"></pre>
+               |<pre class="prettyprint" id="lastMutation"></pre>
                |</div>
+               |<pre id="right">
+               |</pre>
+               |</div>
+               |<script src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.10.0/highlight.min.js"></script>               |
                |<script src="//cdnjs.cloudflare.com/ajax/libs/smoothie/1.27.0/smoothie.min.js"></script>
                |<script>
                |function ch(id) {
@@ -83,13 +111,23 @@ object UI {
                |const exp = ch("expiration")
                |
                |function update(sel, value) { document.getElementById(sel + "total").innerHTML = value; }
+               |function show(key) {
+               |  document.getElementById("right").innerHTML = "Fetching " + key + " ..."
+               |  fetch('/documents/$host/$bucket/' + key)
+               |    .then(res => res.json())
+               |    .then(doc => {
+               |      const block = document.getElementById("right")
+               |      block.innerHTML =JSON.stringify(doc, null, 2)
+               |      hljs.highlightBlock(block)
+               |    })
+               |}
                |var source = new EventSource('/events/$host/$bucket?interval=${interval.toMillis}&n=$n');
                |source.addEventListener('message', function(e) {
                |  var data = JSON.parse(e.data);
                |  mut.append(new Date().getTime(), data.mutations.lastDelta); update("mut", data.mutations.total);
                |  del.append(new Date().getTime(), data.deletions.lastDelta); update("del", data.deletions.total);
                |  exp.append(new Date().getTime(), data.expirations.lastDelta); update("exp", data.expirations.total);
-               |  document.getElementById("lastMutation").innerHTML = data.mutations.last.reverse().reduce((acc, x) => acc + x + "<br>", "");
+               |  document.getElementById("lastMutation").innerHTML = data.mutations.last.reverse().reduce((acc, x) => acc + "<a href=\\"javascript: show('" + x.key + "')\\">" + x.key + "</a> (" + (x.expiry > 0 ? new Date(x.expiry*1000).toISOString() : "0") + ")" + "<br>", "");
                |}, false);
                |</script>
                |</body>

@@ -7,8 +7,10 @@ import com.couchbase.client.dcp.config.DcpControl
 import com.couchbase.client.dcp.message.{DcpDeletionMessage, DcpExpirationMessage, DcpMutationMessage, DcpSnapshotMarkerRequest}
 import com.couchbase.client.dcp.{Client, StreamFrom, StreamTo}
 
+case class KeyWithExpiry(key: String, expiry: Int)
+
 object CouchbaseSource {
-  def fill(hostname: String, bucket: String, m: SourceQueueWithComplete[String], d: SourceQueueWithComplete[String], e: SourceQueueWithComplete[String])(implicit sys: ActorSystem) = {
+  def fill(hostname: String, bucket: String, m: SourceQueueWithComplete[KeyWithExpiry], d: SourceQueueWithComplete[String], e: SourceQueueWithComplete[String])(implicit sys: ActorSystem) = {
     sys.log.info(s"Will listen to DCP of $hostname:$bucket")
 
     val client = createClient(hostname, bucket)
@@ -22,7 +24,7 @@ object CouchbaseSource {
 
     client.dataEventHandler { event =>
       if (DcpMutationMessage.is(event)) {
-        m.offer(DcpMutationMessage.keyString(event))
+        m.offer(KeyWithExpiry(DcpMutationMessage.keyString(event), DcpMutationMessage.expiry(event)))
         client.acknowledgeBuffer(event)
       }
       else if (DcpDeletionMessage.is(event)) {
@@ -50,7 +52,7 @@ object CouchbaseSource {
 
 
   def createSources() = {
-    val mutations = Source.queue[String](10000, OverflowStrategy.dropHead)
+    val mutations = Source.queue[KeyWithExpiry](10000, OverflowStrategy.dropHead)
     val deletions = Source.queue[String](10000, OverflowStrategy.dropHead)
     val expirations = Source.queue[String](10000, OverflowStrategy.dropHead)
     (mutations, deletions, expirations)

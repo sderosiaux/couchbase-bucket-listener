@@ -2,16 +2,15 @@ package com.ctheu.couchbase
 
 import akka.NotUsed
 import akka.stream.SourceShape
-import akka.stream.scaladsl.{Broadcast, Flow, GraphDSL, Keep, Source, SourceQueueWithComplete, ZipWith}
+import akka.stream.scaladsl.{Broadcast, Flow, GraphDSL, Keep, Source, ZipWith}
 import com.ctheu.couchbase.graphstages.{Counter, DeltaCounter, NLastDistinctItemsGraphStage}
 
 import scala.concurrent.duration._
 
 object CouchbaseGraph {
 
-  type SimpleKey[Out] = KeyWithCounters[Out]
   case class KeyWithCounters[Out](total: Long, lastDelta: Long, last: Seq[Out])
-  case class Combinaison[Out](mutations: SimpleKey[Out], deletions: SimpleKey[Out], expirations: SimpleKey[Out])
+  case class Combinaison[Out1, Out2, Out3](mutations: KeyWithCounters[Out1], deletions: KeyWithCounters[Out2], expirations: KeyWithCounters[Out3])
 
   def withCounters[Out, Mat](source: Source[Out, Mat], n: Int = 10): Source[KeyWithCounters[Out], Mat] = {
     Source.fromGraph(GraphDSL.create(source) { implicit b => s =>
@@ -40,7 +39,7 @@ object CouchbaseGraph {
     val allCounters = GraphDSL.create(mutationsWithCounts, deletionsWithCounts, expirationsWithCounts)((_, _, _)) { implicit b =>
       (m, d, e) =>
         import GraphDSL.Implicits._
-        val zip = b.add(ZipWith[SimpleKey[String], SimpleKey[String], SimpleKey[String], (SimpleKey[String], SimpleKey[String], SimpleKey[String])]((_, _, _)))
+        val zip = b.add(ZipWith[KeyWithCounters[KeyWithExpiry], KeyWithCounters[String], KeyWithCounters[String], (KeyWithCounters[KeyWithExpiry], KeyWithCounters[String], KeyWithCounters[String])]((_, _, _)))
         m ~> zip.in0
         d ~> zip.in1
         e ~> zip.in2
