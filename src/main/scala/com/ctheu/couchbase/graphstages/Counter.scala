@@ -3,6 +3,11 @@ package com.ctheu.couchbase.graphstages
 import akka.stream.stage.{GraphStage, GraphStageLogic, InHandler, OutHandler}
 import akka.stream.{Attributes, FlowShape, Inlet, Outlet}
 
+/**
+  * Counts the elements passing through.
+  *
+  * It never backpressures.
+  */
 class Counter[T] extends GraphStage[FlowShape[T, Long]] {
   override val shape = FlowShape(Inlet[T]("Counter.in"), Outlet[Long]("Counter.out"))
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) with InHandler with OutHandler {
