@@ -8,6 +8,7 @@ import akka.stream._
 import akka.stream.scaladsl.SourceQueueWithComplete
 import com.couchbase.client.java.document._
 import com.couchbase.client.java.{AsyncBucket, CouchbaseCluster}
+import com.ctheu.couchbase.graphstages.{Deletion, Expiration, Accumulator, Mutation}
 import de.heikoseeberger.akkasse.ServerSentEvent
 import play.api.libs.json.Json
 
@@ -17,22 +18,21 @@ import scala.util.{Failure, Success}
 
 object UI {
 
-  import CouchbaseGraph._
-
   def route()(implicit sys: ActorSystem, mat: Materializer): Route = {
     import akka.http.scaladsl.server.Directives._
     import de.heikoseeberger.akkasse.EventStreamMarshalling._
 
     import concurrent.duration._
-
-
     implicit val ec = sys.dispatcher
-    implicit val keysJson = Json.writes[KeyWithCounters[String]]
-    implicit val combinaisonJson = Json.writes[Combinaison[String, String, String]]
-    implicit val tupleJson = Json.writes[KeyWithExpiry]
-    implicit val keysExpiryJson = Json.writes[KeyWithCounters[KeyWithExpiry]]
 
-    implicit val combinaisonJsonWithExpiry = Json.writes[Combinaison[KeyWithExpiry, String, String]]
+    implicit val muts = Json.writes[Mutation]
+    implicit val dels = Json.writes[Deletion]
+    implicit val exps = Json.writes[Expiration]
+    implicit val accumulatorMut = Json.writes[Accumulator[Mutation]]
+    implicit val accumulatorDel = Json.writes[Accumulator[Deletion]]
+    implicit val accumulatorExp = Json.writes[Accumulator[Expiration]]
+    implicit val accumulators = Json.writes[Accumulators[Mutation, Deletion, Expiration]]
+
     implicit val durationMarshaller = Unmarshaller.strict[String, FiniteDuration](s => FiniteDuration(s.toInt, "ms"))
 
     val DEFAULT_DURATION: FiniteDuration = 200 millis
@@ -58,13 +58,9 @@ object UI {
       get {
         parameters('interval.as[FiniteDuration] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT) { (interval, nLast) =>
           complete {
-            val promise = Promise[(SourceQueueWithComplete[KeyWithExpiry], SourceQueueWithComplete[String], SourceQueueWithComplete[String])]()
-            promise.future.foreach { case (m, d, e) => CouchbaseSource.fill(host, bucket, m, d, e) }
-
-            CouchbaseGraph.source(host, bucket, interval, nLast)
-              .map { case (m: KeyWithCounters[KeyWithExpiry], d: KeyWithCounters[String], e: KeyWithCounters[String]) => ServerSentEvent(Json.toJson(Combinaison(m, d, e)).toString()) }
+            CouchbaseGraph.source(host, bucket, nLast, interval)
+              .map { acc => ServerSentEvent(Json.toJson(acc).toString()) }
               .keepAlive(1 second, () => ServerSentEvent.heartbeat)
-              .mapMaterializedValue { x => promise.trySuccess(x); x }
           }
         }
       }
