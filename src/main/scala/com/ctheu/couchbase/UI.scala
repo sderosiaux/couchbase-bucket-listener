@@ -3,8 +3,9 @@ package com.ctheu.couchbase
 import java.util.concurrent.ConcurrentHashMap
 
 import akka.actor.ActorSystem
-import akka.http.scaladsl.model.{ContentTypes, HttpEntity, HttpRequest}
-import akka.http.scaladsl.server.Route
+import akka.http.scaladsl.model.StatusCodes.ServerError
+import akka.http.scaladsl.model._
+import akka.http.scaladsl.server.{Directive1, Route}
 import akka.http.scaladsl.unmarshalling._
 import akka.stream._
 import akka.stream.scaladsl.SourceQueueWithComplete
@@ -16,6 +17,7 @@ import rx.Observable
 
 import scala.concurrent.Promise
 import scala.language.postfixOps
+import scala.util.{Failure, Success, Try}
 
 object UI {
 
@@ -40,14 +42,20 @@ object UI {
     val DEFAULT_DURATION: FiniteDuration = 200 millis
     val DEFAULT_COUNT = 10
 
+    // TODO(sd): add some TTL to close them
     val connectionsCache = collection.mutable.Map[(String, String), AsyncBucket]()
 
     path("documents" / """[-a-z0-9\._]+""".r / """[-a-z0-9\._]+""".r / """[-a-zA-Z0-9\._:]+""".r) { (host, bucket, key) =>
       get {
-        complete {
+        // TODO(sd): move into a repository
+        val couchbaseGet = {
+          import rx.lang.scala.JavaConverters._
           val b = connectionsCache.getOrElseUpdate((host, bucket), CouchbaseCluster.create(host).openBucket(bucket).async())
-          val doc: JsonDocument = b.get(key).toBlocking.last()
-          HttpEntity(doc.content().toString)
+          b.get(key).asScala.map(_.content().toString)
+        }
+        onComplete(couchbaseGet.toBlocking.toFuture) {
+          case Success(res) => complete(HttpEntity(res))
+          case Failure(e) => complete(HttpResponse(StatusCodes.InternalServerError, entity = e.getMessage))
         }
       }
     } ~ path("events" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
@@ -66,6 +74,7 @@ object UI {
       }
     } ~ path("ui" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
       get {
+        // TODO(sd): I tried to forget all my front-end knowledge. Time to add some React and Scala.js?
         parameter('interval.as[Int] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT) { (interval, n) =>
           complete(HttpEntity(ContentTypes.`text/html(UTF-8)`,
             s"""
@@ -112,11 +121,14 @@ object UI {
                |
                |function update(sel, value) { document.getElementById(sel + "total").innerHTML = value; }
                |function show(key) {
+               |  const block = document.getElementById("right")
                |  document.getElementById("right").innerHTML = "Fetching " + key + " ..."
                |  fetch('/documents/$host/$bucket/' + key)
-               |    .then(res => res.json())
+               |    .then(res => {
+               |      if (res.status == 500) return res.text()
+               |      else { return res.json() }
+               |    })
                |    .then(doc => {
-               |      const block = document.getElementById("right")
                |      block.innerHTML = JSON.stringify(doc, null, 2)
                |      hljs.highlightBlock(block)
                |      block.innerHTML = key + "\\n" + "-".repeat(key.length) + "\\n\\n\\n" + block.innerHTML
