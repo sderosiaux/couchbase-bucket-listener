@@ -31,6 +31,7 @@ object CouchbaseGraph {
   }
 
   def source(host: String, bucket: String, interval: FiniteDuration, nLast: Int = 10) = {
+    // TODO(sd): create a proper GraphStage[SourceShape[T, U]] to act as source? Without relying on a Queue
     val (mutations, deletions, expirations) = CouchbaseSource.createSources()
     val mutationsWithCounts = withCounters(mutations, nLast)
     val deletionsWithCounts = withCounters(deletions, nLast)
