@@ -1,23 +1,19 @@
 package com.ctheu.couchbase
 
-import java.util.concurrent.ConcurrentHashMap
-
 import akka.actor.ActorSystem
-import akka.http.scaladsl.model.StatusCodes.ServerError
 import akka.http.scaladsl.model._
-import akka.http.scaladsl.server.{Directive1, Route}
+import akka.http.scaladsl.server.Route
 import akka.http.scaladsl.unmarshalling._
 import akka.stream._
 import akka.stream.scaladsl.SourceQueueWithComplete
+import com.couchbase.client.java.document._
 import com.couchbase.client.java.{AsyncBucket, CouchbaseCluster}
-import com.couchbase.client.java.document.JsonDocument
 import de.heikoseeberger.akkasse.ServerSentEvent
-import play.api.libs.json.{JsValue, Json, Writes}
-import rx.Observable
+import play.api.libs.json.Json
 
 import scala.concurrent.Promise
 import scala.language.postfixOps
-import scala.util.{Failure, Success, Try}
+import scala.util.{Failure, Success}
 
 object UI {
 
@@ -51,7 +47,7 @@ object UI {
         val couchbaseGet = {
           import rx.lang.scala.JavaConverters._
           val b = connectionsCache.getOrElseUpdate((host, bucket), CouchbaseCluster.create(host).openBucket(bucket).async())
-          b.get(key).asScala.map(_.content().toString)
+          b.get(key, classOf[RawJsonDocument]).asScala.map(_.content())
         }
         onComplete(couchbaseGet.toBlocking.toFuture) {
           case Success(res) => complete(HttpEntity(res))
