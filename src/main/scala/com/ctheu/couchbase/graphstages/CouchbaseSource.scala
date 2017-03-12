@@ -1,6 +1,6 @@
 package com.ctheu.couchbase.graphstages
 
-import akka.stream.stage.{GraphStage, GraphStageLogic, OutHandler, StageLogging}
+import akka.stream.stage._
 import akka.stream.{Attributes, Outlet, SourceShape}
 import com.couchbase.client.dcp.config.DcpControl
 import com.couchbase.client.dcp.message.{DcpDeletionMessage, DcpExpirationMessage, DcpMutationMessage, DcpSnapshotMarkerRequest}
@@ -35,14 +35,14 @@ class CouchbaseSource(hostname: String, bucket: String) extends GraphStage[Sourc
 
       setHandler(shape.out, this)
 
-      val cb = getAsyncCallback[CouchbaseEvent] { event =>
+      val feed = getAsyncCallback[CouchbaseEvent] { event =>
         if (isAvailable(shape.out)) {
           push(shape.out, event)
         }
         // if the port is not available, the event is lost.
         // this is why the next stage should never backpressure, to not lose any bits.
         // we could maintain some buffer and "emit" but I don't like that.
-      }
+      }.invoke _
 
       override def postStop(): Unit = {
         log.info(s"Stage has finished, disconnecting DCP client ($hostname:$bucket) ...")
@@ -83,15 +83,15 @@ class CouchbaseSource(hostname: String, bucket: String) extends GraphStage[Sourc
 
         client.dataEventHandler { event =>
           if (DcpMutationMessage.is(event)) {
-            cb.invoke(Mutation(DcpMutationMessage.keyString(event), DcpMutationMessage.expiry(event)))
+            feed(Mutation(DcpMutationMessage.keyString(event), DcpMutationMessage.expiry(event)))
             client.acknowledgeBuffer(event)
           }
           else if (DcpDeletionMessage.is(event)) {
-            cb.invoke(Deletion(DcpDeletionMessage.keyString(event)))
+            feed(Deletion(DcpDeletionMessage.keyString(event)))
             client.acknowledgeBuffer(event)
           }
           else if (DcpExpirationMessage.is(event)) {
-            cb.invoke(Expiration(DcpExpirationMessage.keyString(event)))
+            feed(Expiration(DcpExpirationMessage.keyString(event)))
             client.acknowledgeBuffer(event)
           }
           else {
