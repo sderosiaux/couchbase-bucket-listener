@@ -1,6 +1,9 @@
 language: scala
+sudo: false
 scala:
    - 2.12.1
+jdk:
+  - oraclejdk8
 script:
   - sbt compile
 
