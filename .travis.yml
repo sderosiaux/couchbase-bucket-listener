@@ -1,0 +1,7 @@
+language: scala
+scala:
+   - 2.12.1
+script:
+  - sbt compile
+
+# We don't have tests yet :-)

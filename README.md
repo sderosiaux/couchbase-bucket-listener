@@ -1,4 +1,4 @@
-# Couchbase Bucket Listener
+# Couchbase Bucket Listener [![Build Status](https://travis-ci.org/chtefi/couchbase-bucket-listener.svg?branch=master)](https://travis-ci.org/chtefi/couchbase-bucket-listener)
 
 A tiny admin displaying some info in real-time about a particular bucket in a Couchbase cluster.
 
