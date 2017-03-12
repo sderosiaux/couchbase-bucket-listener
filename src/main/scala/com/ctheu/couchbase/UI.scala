@@ -89,27 +89,27 @@ object UI {
                |<div class="type"><canvas id="mutation" width="400" height="100"></canvas><div>Total<span id="muttotal"></span></div></div>
                |<h3>Deletions</h3>
                |<div class="type"><canvas id="deletion" width="400" height="100"></canvas><div>Total<span id="deltotal"></span></div></div>
-               |<h3>Expirations</h3>
-               |<div class="type"><canvas id="expiration" width="400" height="100"></canvas><div>Total<span id="exptotal"></span></div></div>
+               |<!--<h3>Expirations</h3>
+               |<div class="type"><canvas id="expiration" width="400" height="100"></canvas><div>Total<span id="exptotal"></span></div></div>-->
                |<h3>Last $n documents mutated (key, expiry), earliest to oldest</h3>
                |<pre class="prettyprint" id="lastMutation"></pre>
                |</div>
-               |<pre id="right">
+               |<pre id="right">Click on a mutated document key to display its content here!
                |</pre>
                |</div>
                |<script src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.10.0/highlight.min.js"></script>               |
                |<script src="//cdnjs.cloudflare.com/ajax/libs/smoothie/1.27.0/smoothie.min.js"></script>
                |<script>
                |function ch(id) {
-               |const chart = new SmoothieChart({millisPerPixel:100,maxValueScale:1.5,grid:{strokeStyle:'rgba(119,119,119,0.43)'}});
+               |const chart = new SmoothieChart({millisPerPixel:100,minValue:0,maxValueScale:1.5,grid:{strokeStyle:'rgba(119,119,119,0.43)'}});
                |const series = new TimeSeries();
                |chart.addTimeSeries(series, { strokeStyle: 'rgba(0, 255, 0, 1)', fillStyle: 'rgba(0, 255, 0, 0.2)', lineWidth: 1 });
-               |chart.streamTo(document.getElementById(id), 1000);
+               |chart.streamTo(document.getElementById(id), 500);
                |return series;
                |}
                |const mut = ch("mutation")
                |const del = ch("deletion")
-               |const exp = ch("expiration")
+               |//const exp = ch("expiration")
                |
                |function update(sel, value) { document.getElementById(sel + "total").innerHTML = value; }
                |function show(key) {
@@ -131,7 +131,7 @@ object UI {
                |  var data = JSON.parse(e.data);
                |  mut.append(new Date().getTime(), data.mutations.lastDelta); update("mut", data.mutations.total);
                |  del.append(new Date().getTime(), data.deletions.lastDelta); update("del", data.deletions.total);
-               |  exp.append(new Date().getTime(), data.expirations.lastDelta); update("exp", data.expirations.total);
+               |  //exp.append(new Date().getTime(), data.expirations.lastDelta); update("exp", data.expirations.total);
                |  document.getElementById("lastMutation").innerHTML = data.mutations.last.reverse().reduce((acc, x) => acc + "<a href=\\"javascript: show('" + x.key + "')\\">" + x.key + "</a> (" + (x.expiry > 0 ? new Date(x.expiry*1000).toISOString() : "0") + ")" + "<br>", "");
                |}, false);
                |</script>

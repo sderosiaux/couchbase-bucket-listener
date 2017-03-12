@@ -34,3 +34,8 @@ This project is using:
 - Akka-HTTP
 - Akka-SSE because websockets are overrated
 - Smoothie charts for the smooth charts
+
+# Notes
+
+DCP exposes `Expiration` messages that are taken into account here but are not displayed.
+Couchbase 4.5.0 does not even emit them yet, so it's just hidden in the UI until further notice.
