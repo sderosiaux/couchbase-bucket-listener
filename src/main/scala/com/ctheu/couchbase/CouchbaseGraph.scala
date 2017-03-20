@@ -13,8 +13,8 @@ case class Accumulators[Out1, Out2, Out3](mutations: Accumulator[Out1], deletion
 object CouchbaseGraph {
 
   // This source never backpressures
-  def accumulatorsSource(host: String, bucket: String, nLast: Int) = {
-    Source.fromGraph(GraphDSL.create(Source.fromGraph(new CouchbaseSource(host, bucket))) { implicit b => src =>
+  def accumulatorsSource(hostnames: List[String], bucket: String, nLast: Int) = {
+    Source.fromGraph(GraphDSL.create(Source.fromGraph(new CouchbaseSource(hostnames, bucket))) { implicit b => src =>
       import GraphDSL.Implicits._
 
       val p = b.add(Partition[CouchbaseEvent](3, {
@@ -34,7 +34,7 @@ object CouchbaseGraph {
     })
   }
 
-  def source(host: String, bucket: String, nLast: Int = 10, interval: FiniteDuration): Source[Accumulators[Mutation, Deletion, Expiration], NotUsed] = {
-    accumulatorsSource(host, bucket, nLast).throttle(1, interval, 1, Shaping)
+  def source(hostnames: List[String], bucket: String, nLast: Int = 10, interval: FiniteDuration): Source[Accumulators[Mutation, Deletion, Expiration], NotUsed] = {
+    accumulatorsSource(hostnames, bucket, nLast).throttle(1, interval, 1, Shaping)
   }
 }

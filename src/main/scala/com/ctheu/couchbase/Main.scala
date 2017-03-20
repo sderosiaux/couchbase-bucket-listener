@@ -10,5 +10,5 @@ object Main extends App {
   implicit val ec = system.dispatcher
 
   Http().bindAndHandle(UI.route(), "0.0.0.0", 8080)
-        .foreach(binding ⇒ system.log.info(s"HTTP listening on ${binding.localAddress}"))
+    .foreach(binding ⇒ system.log.info(s"HTTP listening on ${binding.localAddress}"))
 }

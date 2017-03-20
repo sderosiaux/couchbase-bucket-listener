@@ -54,20 +54,22 @@ object UI {
           case Failure(e) => complete(HttpResponse(StatusCodes.InternalServerError, entity = e.getMessage))
         }
       }
-    } ~ path("events" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
+    } ~ path("events" / """([-a-z0-9\._]+(?:,[-a-z0-9\._]+)*)""".r / """[-a-z0-9_]+""".r) { (hosts, bucket) =>
       get {
         parameters('interval.as[FiniteDuration] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT) { (interval, nLast) =>
           complete {
-            CouchbaseGraph.source(host, bucket, nLast, interval)
+            val hostnames = hosts.split(",").toList
+            CouchbaseGraph.source(hostnames, bucket, nLast, interval)
               .map { acc => ServerSentEvent(Json.toJson(acc).toString()) }
               .keepAlive(1 second, () => ServerSentEvent.heartbeat)
           }
         }
       }
-    } ~ path("ui" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
+    } ~ path("ui" / """([-a-z0-9\._]+(?:,[-a-z0-9\._]+)*)""".r / """[-a-z0-9_]+""".r) { (hosts, bucket) =>
       get {
         // TODO(sd): I tried to forget all my front-end knowledge. Time to add some React and Scala.js?
         parameter('interval.as[Int] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT) { (interval, n) =>
+          val hostnames = hosts.split(",").toList
           complete(HttpEntity(ContentTypes.`text/html(UTF-8)`,
             s"""
                |<html>
@@ -115,7 +117,7 @@ object UI {
                |function show(key) {
                |  const block = document.getElementById("right")
                |  document.getElementById("right").innerHTML = "Fetching " + key + " ..."
-               |  fetch('/documents/$host/$bucket/' + key)
+               |  fetch('/documents/${hostnames.head}/$bucket/' + key)
                |    .then(res => {
                |      if (res.status == 500) return res.text()
                |      else { return res.json() }
@@ -126,7 +128,7 @@ object UI {
                |      block.innerHTML = key + "\\n" + "-".repeat(key.length) + "\\n\\n\\n" + block.innerHTML
                |    })
                |}
-               |var source = new EventSource('/events/$host/$bucket?interval=${interval.toMillis}&n=$n');
+               |var source = new EventSource('/events/$hosts/$bucket?interval=${interval.toMillis}&n=$n');
                |source.addEventListener('message', function(e) {
                |  var data = JSON.parse(e.data);
                |  mut.append(new Date().getTime(), data.mutations.lastDelta); update("mut", data.mutations.total);

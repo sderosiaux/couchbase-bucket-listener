@@ -5,6 +5,7 @@ import akka.stream.{Attributes, Outlet, SourceShape}
 import com.couchbase.client.dcp.config.DcpControl
 import com.couchbase.client.dcp.message.{DcpDeletionMessage, DcpExpirationMessage, DcpMutationMessage, DcpSnapshotMarkerRequest}
 import com.couchbase.client.dcp.{Client, StreamFrom, StreamTo}
+import scala.collection.JavaConverters._
 
 sealed trait CouchbaseEvent
 case class Mutation(key: String, expiry: Int) extends CouchbaseEvent
@@ -12,17 +13,17 @@ case class Deletion(key: String) extends CouchbaseEvent
 case class Expiration(key: String) extends CouchbaseEvent
 
 object CouchbaseSource {
-  def DCPClient(hostname: String, bucket: String) = {
+  def DCPClient(hostnames: List[String], bucket: String) = {
     Client.configure()
       .bucket(bucket)
-      .hostnames(hostname)
+      .hostnames(hostnames.asJava)
       .controlParam(DcpControl.Names.CONNECTION_BUFFER_SIZE, 10000) // set the buffer to 10K
       .bufferAckWatermark(75) // after 75% are reached of the 10KB, acknowledge against the serv
       .build()
   }
 }
 
-class CouchbaseSource(hostname: String, bucket: String) extends GraphStage[SourceShape[CouchbaseEvent]] {
+class CouchbaseSource(hostnames: List[String], bucket: String) extends GraphStage[SourceShape[CouchbaseEvent]] {
 
   override val shape = SourceShape(Outlet[CouchbaseEvent]("CouchbaseSource.out"))
 
@@ -45,25 +46,25 @@ class CouchbaseSource(hostname: String, bucket: String) extends GraphStage[Sourc
       }.invoke _
 
       override def postStop(): Unit = {
-        log.info(s"Stage has finished, disconnecting DCP client ($hostname:$bucket) ...")
+        log.info(s"Stage has finished, disconnecting DCP client ($hostnames:$bucket) ...")
         client.disconnect()
       }
 
       override def onDownstreamFinish(): Unit = {
-        log.info(s"Downstream finished ($hostname:$bucket)")
+        log.info(s"Downstream finished ($hostnames:$bucket)")
         super.onDownstreamFinish()
       }
 
       override def preStart(): Unit = {
-        client = DCPClient(hostname, bucket)
-        log.info(s"Connected to Couchbase DCP on $hostname:$bucket")
+        client = DCPClient(hostnames, bucket)
+        log.info(s"Connected to Couchbase DCP on $hostnames:$bucket")
 
         bindEventHandlers(client)
 
         client.connect().await()
         client.initializeState(StreamFrom.NOW, StreamTo.INFINITY).await()
         client.startStreaming().await()
-        log.info(s"Streaming on $hostname:$bucket has started")
+        log.info(s"Streaming on $hostnames:$bucket has started")
 
       }
 
@@ -85,16 +86,13 @@ class CouchbaseSource(hostname: String, bucket: String) extends GraphStage[Sourc
           if (DcpMutationMessage.is(event)) {
             feed(Mutation(DcpMutationMessage.keyString(event), DcpMutationMessage.expiry(event)))
             client.acknowledgeBuffer(event)
-          }
-          else if (DcpDeletionMessage.is(event)) {
+          } else if (DcpDeletionMessage.is(event)) {
             feed(Deletion(DcpDeletionMessage.keyString(event)))
             client.acknowledgeBuffer(event)
-          }
-          else if (DcpExpirationMessage.is(event)) {
+          } else if (DcpExpirationMessage.is(event)) {
             feed(Expiration(DcpExpirationMessage.keyString(event)))
             client.acknowledgeBuffer(event)
-          }
-          else {
+          } else {
             log.warning("Unknown Couchbase event")
           }
           event.release()
