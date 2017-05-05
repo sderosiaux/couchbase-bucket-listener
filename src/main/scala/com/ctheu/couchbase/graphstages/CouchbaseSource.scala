@@ -73,26 +73,26 @@ class CouchbaseSource(hostname: String, bucket: String) extends GraphStage[Sourc
 
       def bindEventHandlers(client: Client): Unit = {
 
-        client.controlEventHandler { event =>
+        client.controlEventHandler { (controller, event) =>
           // Those events MUST be acknowledged
           if (DcpSnapshotMarkerRequest.is(event)) {
-            client.acknowledgeBuffer(event)
+            controller.ack(event)
           }
           event.release()
         }
 
-        client.dataEventHandler { event =>
+        client.dataEventHandler { (controller, event) =>
           if (DcpMutationMessage.is(event)) {
             feed(Mutation(DcpMutationMessage.keyString(event), DcpMutationMessage.expiry(event)))
-            client.acknowledgeBuffer(event)
+            controller.ack(event)
           }
           else if (DcpDeletionMessage.is(event)) {
             feed(Deletion(DcpDeletionMessage.keyString(event)))
-            client.acknowledgeBuffer(event)
+            controller.ack(event)
           }
           else if (DcpExpirationMessage.is(event)) {
             feed(Expiration(DcpExpirationMessage.keyString(event)))
-            client.acknowledgeBuffer(event)
+            controller.ack(event)
           }
           else {
             log.warning("Unknown Couchbase event")
