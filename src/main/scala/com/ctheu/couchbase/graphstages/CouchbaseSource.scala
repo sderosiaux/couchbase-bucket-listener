@@ -23,7 +23,7 @@ object CouchbaseSource {
   }
 }
 
-class CouchbaseSource(hostname: String, bucket: String, pwd: Option[String]) extends GraphStage[SourceShape[CouchbaseEvent]] {
+class CouchbaseSource(hostname: String, bucket: String, pwd: Option[String], filter: Option[String]) extends GraphStage[SourceShape[CouchbaseEvent]] {
 
   override val shape = SourceShape(Outlet[CouchbaseEvent]("CouchbaseSource.out"))
 
@@ -84,15 +84,24 @@ class CouchbaseSource(hostname: String, bucket: String, pwd: Option[String]) ext
 
         client.dataEventHandler { (controller, event) =>
           if (DcpMutationMessage.is(event)) {
-            feed(Mutation(DcpMutationMessage.keyString(event), DcpMutationMessage.expiry(event)))
+            val key = DcpMutationMessage.keyString(event)
+            if (filter.forall(key.contains(_))) {
+              feed(Mutation(key, DcpMutationMessage.expiry(event)))
+            }
             controller.ack(event)
           }
           else if (DcpDeletionMessage.is(event)) {
-            feed(Deletion(DcpDeletionMessage.keyString(event)))
+            val key = DcpDeletionMessage.keyString(event)
+            if (filter.forall(key.contains(_))) {
+              feed(Deletion(key))
+            }
             controller.ack(event)
           }
           else if (DcpExpirationMessage.is(event)) {
-            feed(Expiration(DcpExpirationMessage.keyString(event)))
+            val key = DcpExpirationMessage.keyString(event)
+            if (filter.forall(key.contains(_))) {
+              feed(Expiration(key))
+            }
             controller.ack(event)
           }
           else {
