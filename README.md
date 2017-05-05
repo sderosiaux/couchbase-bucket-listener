@@ -24,6 +24,12 @@ It is refreshed every 200ms by default, but this is configurable:
  
 It's also possible to click on those last mutated documents keys (displayed at the bottom), to display its content on the right.
 
+## Bucket lists
+
+It's possible to list all the available buckets, with hyperlinks to navigate quickly:
+
+`http://localhost:8080/ui/couchbase01?user=admin&pwd=admin`
+
 # Internals
 
 This project is using:
