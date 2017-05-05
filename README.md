@@ -24,7 +24,17 @@ It is refreshed every 200ms by default, but this is configurable:
  
 It's also possible to click on those last mutated documents keys (displayed at the bottom), to display its content on the right.
 
-If the bucket has the password, just set the query parameter `pwd`: `&pwd=xxx`.
+- If the bucket is password protected, just set the query parameter `pwd`: `&pwd=xxx`.
+- It's possible to filter only on certain keys using `filter`: `&filter=102:` to grab keys containing matching `*102:*`.
+
+## Parameters list
+
+All are optional:
+
+- interval=1000 (milliseconds)
+- n=100 (list of mutated document keys)
+- password=xxx (for password protected buckets)
+- filter=xxx (to filter only on certain keys)
 
 ## Bucket lists
 
