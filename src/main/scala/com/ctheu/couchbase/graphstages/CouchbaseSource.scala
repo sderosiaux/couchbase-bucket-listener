@@ -12,9 +12,10 @@ case class Deletion(key: String) extends CouchbaseEvent
 case class Expiration(key: String) extends CouchbaseEvent
 
 object CouchbaseSource {
-  def DCPClient(hostname: String, bucket: String) = {
+  def DCPClient(hostname: String, bucket: String, pwd: Option[String] = None) = {
     Client.configure()
       .bucket(bucket)
+      .password(pwd.getOrElse(""))
       .hostnames(hostname)
       .controlParam(DcpControl.Names.CONNECTION_BUFFER_SIZE, 10000) // set the buffer to 10K
       .bufferAckWatermark(75) // after 75% are reached of the 10KB, acknowledge against the serv
@@ -22,7 +23,7 @@ object CouchbaseSource {
   }
 }
 
-class CouchbaseSource(hostname: String, bucket: String) extends GraphStage[SourceShape[CouchbaseEvent]] {
+class CouchbaseSource(hostname: String, bucket: String, pwd: Option[String]) extends GraphStage[SourceShape[CouchbaseEvent]] {
 
   override val shape = SourceShape(Outlet[CouchbaseEvent]("CouchbaseSource.out"))
 
@@ -55,7 +56,7 @@ class CouchbaseSource(hostname: String, bucket: String) extends GraphStage[Sourc
       }
 
       override def preStart(): Unit = {
-        client = DCPClient(hostname, bucket)
+        client = DCPClient(hostname, bucket, pwd)
         log.info(s"Connected to Couchbase DCP on $hostname:$bucket")
 
         bindEventHandlers(client)

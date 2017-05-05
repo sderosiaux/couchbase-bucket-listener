@@ -43,22 +43,24 @@ object UI {
 
     path("documents" / """[-a-z0-9\._]+""".r / """[-a-z0-9\._]+""".r / """[-a-zA-Z0-9\._:]+""".r) { (host, bucket, key) =>
       get {
-        // TODO(sd): move into a repository
-        val couchbaseGet = {
-          import rx.lang.scala.JavaConverters._
-          val b = connectionsCache.getOrElseUpdate((host, bucket), CouchbaseCluster.create(host).openBucket(bucket).async())
-          b.get(key, classOf[RawJsonDocument]).asScala.map(_.content())
-        }
-        onComplete(couchbaseGet.toBlocking.toFuture) {
-          case Success(res) => complete(HttpEntity(res))
-          case Failure(e) => complete(HttpResponse(StatusCodes.InternalServerError, entity = e.getMessage))
+        parameters('pwd.as[String] ?) { pwd =>
+          // TODO(sd): move into a repository
+          val couchbaseGet = {
+            import rx.lang.scala.JavaConverters._
+            val b = connectionsCache.getOrElseUpdate((host, bucket), CouchbaseCluster.create(host).openBucket(bucket, pwd.getOrElse("")).async())
+            b.get(key, classOf[RawJsonDocument]).asScala.map(_.content())
+          }
+          onComplete(couchbaseGet.toBlocking.toFuture) {
+            case Success(res) => complete(HttpEntity(res))
+            case Failure(e) => complete(HttpResponse(StatusCodes.InternalServerError, entity = e.getMessage))
+          }
         }
       }
     } ~ path("events" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
       get {
-        parameters('interval.as[FiniteDuration] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT) { (interval, nLast) =>
+        parameters('interval.as[FiniteDuration] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT, 'pwd.as[String] ?) { (interval, nLast, pwd) =>
           complete {
-            CouchbaseGraph.source(host, bucket, nLast, interval)
+            CouchbaseGraph.source(host, bucket, pwd, nLast, interval)
               .map { acc => ServerSentEvent(Json.toJson(acc).toString()) }
               .keepAlive(1 second, () => ServerSentEvent.heartbeat)
           }
@@ -91,7 +93,7 @@ object UI {
     } ~ path("ui" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
       get {
         // TODO(sd): I tried to forget all my front-end knowledge. Time to add some React and Scala.js?
-        parameter('interval.as[Int] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT) { (interval, n) =>
+        parameter('interval.as[Int] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT, 'pwd.as[String] ?) { (interval, n, pwd) =>
           complete(HttpEntity(
             ContentTypes.`text/html(UTF-8)`,
             s"""
@@ -140,7 +142,7 @@ object UI {
                |function show(key) {
                |  const block = document.getElementById("right")
                |  document.getElementById("right").innerHTML = "Fetching " + key + " ..."
-               |  fetch('/documents/$host/$bucket/' + key)
+               |  fetch('/documents/$host/$bucket/' + key + '?pwd=${pwd.getOrElse("")}')
                |    .then(res => {
                |      if (res.status == 500) return res.text()
                |      else { return res.json() }
@@ -151,7 +153,7 @@ object UI {
                |      block.innerHTML = key + "\\n" + "-".repeat(key.length) + "\\n\\n\\n" + block.innerHTML
                |    })
                |}
-               |var source = new EventSource('/events/$host/$bucket?interval=${interval.toMillis}&n=$n');
+               |var source = new EventSource('/events/$host/$bucket?interval=${interval.toMillis}&n=$n&pwd=${pwd.getOrElse("")}');
                |source.addEventListener('message', function(e) {
                |  var data = JSON.parse(e.data);
                |  mut.append(new Date().getTime(), data.mutations.lastDelta); update("mut", data.mutations.total);
