@@ -64,11 +64,36 @@ object UI {
           }
         }
       }
+    } ~ path("ui" / """[-a-z0-9\._]+""".r) { host =>
+      get {
+        parameter('user.as[String], 'pwd.as[String]) { (user, pwd) =>
+          import collection.JavaConverters._
+          val cli = CouchbaseCluster.create(host)
+          val buckets = cli.clusterManager(user, pwd).getBuckets.asScala
+          cli.disconnect()
+
+          def bucketHref(name: String) =
+            s"""
+              |<li><a href="/ui/$host/$name">$name</a></li>
+            """.stripMargin
+
+          complete(HttpEntity(
+            ContentTypes.`text/html(UTF-8)`,
+            s"""
+               |<h1>Buckets available on $host</h1>
+               |<ul>
+               |${buckets.map(_.name()).map(bucketHref).mkString("")}
+               |</ul>
+             """.stripMargin
+          ))
+        }
+      }
     } ~ path("ui" / """[-a-z0-9\._]+""".r / """[-a-z0-9_]+""".r) { (host, bucket) =>
       get {
         // TODO(sd): I tried to forget all my front-end knowledge. Time to add some React and Scala.js?
         parameter('interval.as[Int] ? DEFAULT_DURATION, 'n.as[Int] ? DEFAULT_COUNT) { (interval, n) =>
-          complete(HttpEntity(ContentTypes.`text/html(UTF-8)`,
+          complete(HttpEntity(
+            ContentTypes.`text/html(UTF-8)`,
             s"""
                |<html>
                |<head>
