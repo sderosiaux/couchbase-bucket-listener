@@ -1,3 +1,5 @@
+import play.twirl.sbt.Import.TwirlKeys.compileTemplates
+
 name := "couchbase-listener"
 
 version := "1.0"
@@ -18,3 +20,6 @@ libraryDependencies += "com.couchbase.client" % "java-client" % "2.4.3"
 libraryDependencies += "io.reactivex" % "rxscala_2.11" % "0.26.5"
 
 enablePlugins(JavaAppPackaging)
+enablePlugins(SbtTwirl)
+
+sourceDirectories in (Compile, TwirlKeys.compileTemplates) := (unmanagedResourceDirectories in Compile).value

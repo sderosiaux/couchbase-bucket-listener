@@ -1,0 +1,9 @@
+@(host: String, buckets: List[String])
+
+<h1>Buckets available on @host</h1>
+<ul>
+    @for(b <- buckets) {
+        <li><a href="/ui/@host/@b">@b</a></li>
+    }
+</ul>
+
