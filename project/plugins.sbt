@@ -1,5 +1,5 @@
 logLevel := Level.Warn
 
-addSbtPlugin("com.typesafe.sbt" % "sbt-native-packager" % "1.2.0-M8")
+addSbtPlugin("com.typesafe.sbt" % "sbt-native-packager" % "1.8.1") // Reverting to previously successful version
 
-addSbtPlugin("com.typesafe.sbt" % "sbt-twirl" % "1.3.0")
+addSbtPlugin("com.typesafe.play" % "sbt-twirl" % "1.6.1")

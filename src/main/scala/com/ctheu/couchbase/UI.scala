@@ -9,7 +9,9 @@ import akka.stream.scaladsl.SourceQueueWithComplete
 import com.couchbase.client.java.document._
 import com.couchbase.client.java.{AsyncBucket, CouchbaseCluster}
 import com.ctheu.couchbase.graphstages.{Deletion, Expiration, Accumulator, Mutation}
-import de.heikoseeberger.akkasse.ServerSentEvent
+// Removed: import de.heikoseeberger.akkasse.ServerSentEvent
+import akka.http.scaladsl.model.sse.ServerSentEvent // Added Akka HTTP SSE
+import akka.http.scaladsl.marshalling.sse.EventStreamMarshalling._ // Should now use Akka HTTP's
 import play.api.libs.json.Json
 
 import scala.concurrent.Promise
@@ -20,7 +22,8 @@ object UI {
 
   def route()(implicit sys: ActorSystem, mat: Materializer): Route = {
     import akka.http.scaladsl.server.Directives._
-    import de.heikoseeberger.akkasse.EventStreamMarshalling._
+    // Removed: import de.heikoseeberger.akkasse.EventStreamMarshalling._
+    // EventStreamMarshalling is now imported above from Akka HTTP
 
     import concurrent.duration._
     implicit val ec = sys.dispatcher
